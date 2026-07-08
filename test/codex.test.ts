@@ -5,7 +5,7 @@ import type { CodexOptions, ThreadOptions, TurnOptions } from "@openai/codex-sdk
 import { buildSubprocessEnv } from "../runtime/spawn.ts";
 import { selectProvider } from "../provider.ts";
 import { createCodexProvider, CODEX_ENV_ALLOWLIST, __test } from "../providers/codex.ts";
-import schema from "../providers/codex-review.schema.json" with { type: "json" };
+import schema from "../providers/review.schema.json" with { type: "json" };
 
 test("codex env carries Codex auth/config vars but never service or Claude secrets", () => {
   const source = {

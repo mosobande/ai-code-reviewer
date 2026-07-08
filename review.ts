@@ -168,12 +168,11 @@ function isReviewComment(value: unknown): value is ReviewComment {
 }
 
 /**
- * Parse the model's text reply (the review JSON, possibly fenced) into a
- * ReviewResult. This is the shared output contract; providers unwrap any
- * provider-specific response envelope before calling this.
+ * Validate an already-parsed review value against the output contract. Providers
+ * with enforced structured output (an object, not text) call this directly;
+ * parseReviewJson uses it for text replies.
  */
-export function parseReviewJson(text: string): ReviewResult {
-  const parsed: unknown = JSON.parse(stripFences(text));
+export function coerceReviewResult(parsed: unknown): ReviewResult {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Review response must be a JSON object.");
   }
@@ -185,4 +184,13 @@ export function parseReviewJson(text: string): ReviewResult {
     throw new Error("Review response comments must include path, integer line, body, and valid optional side/severity.");
   }
   return { summary: result.summary, comments: result.comments };
+}
+
+/**
+ * Parse the model's text reply (the review JSON, possibly fenced) into a
+ * ReviewResult. This is the shared output contract; providers unwrap any
+ * provider-specific response envelope before calling this.
+ */
+export function parseReviewJson(text: string): ReviewResult {
+  return coerceReviewResult(JSON.parse(stripFences(text)));
 }

@@ -4,14 +4,22 @@ import { runReview, selectProvider, type ReviewProvider } from "../provider.ts";
 import { createClaudeCliConfig, createClaudeProvider, CLAUDE_ENV_ALLOWLIST } from "../providers/claude.ts";
 import { buildSubprocessEnv } from "../runtime/spawn.ts";
 import { createCliBackedProvider } from "../providers/cli.ts";
+import schema from "../providers/review.schema.json" with { type: "json" };
 
 test("claude CLI adapter defaults to a single diff-only pass on the default model", () => {
   const args = createClaudeCliConfig({}).buildArgs({});
   assert.deepEqual(args, [
-    "-p", "--output-format", "json", "--max-turns", "1", "--model", "claude-sonnet-4-6",
+    "-p", "--output-format", "json", "--json-schema", JSON.stringify(schema),
+    "--max-turns", "1", "--model", "claude-sonnet-4-6",
   ]);
   assert.ok(!args.includes("--add-dir"), "no working dir by default");
   assert.ok(!args.includes("--allowedTools"), "no tool restriction by default");
+});
+
+test("claude CLI adapter enforces the shared review schema as structured output", () => {
+  const args = createClaudeCliConfig({}).buildArgs({});
+  const schemaArg = args[args.indexOf("--json-schema") + 1];
+  assert.deepEqual(JSON.parse(schemaArg!), schema, "schema passes through the CLI intact");
 });
 
 test("claude CLI adapter honours CLAUDE_MODEL", () => {
@@ -28,7 +36,13 @@ test("claude CLI adapter wires a deep review (dir + read-only tools, turn budget
   assert.ok(!args.join(" ").match(/Bash|Write|Edit/), "deep review tools stay read-only");
 });
 
-test("claude parseReply unwraps the Claude Code envelope to the model's text", () => {
+test("claude parseReply prefers the schema-validated structured_output", () => {
+  const review = { summary: "ok", comments: [] };
+  const stdout = JSON.stringify({ result: JSON.stringify(review), structured_output: review });
+  assert.deepEqual(createClaudeCliConfig({}).parseReply(stdout), review);
+});
+
+test("claude parseReply falls back to the text reply when structured_output is absent", () => {
   const stdout = JSON.stringify({ result: '```json\n{"summary":"ok"}\n```', other: "ignored" });
   assert.equal(createClaudeCliConfig({}).parseReply(stdout), '```json\n{"summary":"ok"}\n```');
 });
@@ -107,4 +121,65 @@ test("CLI-backed providers parse stdout through the shared review contract", asy
 
   assert.deepEqual(await provider.run("review prompt", { maxTurns: 3 }), { summary: "from-source:review prompt", comments: [] });
   assert.equal(seenMaxTurns, 3);
+});
+
+test("CLI-backed providers validate an already-structured reply object as-is", async () => {
+  const provider = createCliBackedProvider({
+    name: "mock-structured",
+    command: process.execPath,
+    sourceEnv: { PATH: process.env.PATH ?? "" },
+    envAllowlist: ["PATH"],
+    buildArgs: () => ["-e", `
+      console.log(JSON.stringify({ structured_output: { summary: "structured", comments: [] } }));
+    `],
+    parseReply: (stdout) => JSON.parse(stdout).structured_output,
+  });
+
+  assert.deepEqual(await provider.run("review prompt"), { summary: "structured", comments: [] });
+});
+
+test("CLI-backed providers reject a structured reply that breaks the contract", async () => {
+  const provider = createCliBackedProvider({
+    name: "mock-bad-structured",
+    command: process.execPath,
+    sourceEnv: { PATH: process.env.PATH ?? "" },
+    envAllowlist: ["PATH"],
+    buildArgs: () => ["-e", `console.log(JSON.stringify({ structured_output: { summary: 42 } }));`],
+    parseReply: (stdout) => JSON.parse(stdout).structured_output,
+  });
+
+  await assert.rejects(() => provider.run("review prompt"), /string summary and comments array/);
+});
+
+// Regression: a single malformed model reply used to fail the whole review and
+// require a manual re-request.
+test("runReview retries once after a failed attempt", async () => {
+  let attempts = 0;
+  const provider: ReviewProvider = {
+    name: "flaky",
+    validateConfig() {},
+    async run() {
+      attempts += 1;
+      if (attempts === 1) throw new Error("Expected ',' or ']' after array element in JSON at position 2155");
+      return { summary: "recovered", comments: [] };
+    },
+  };
+
+  assert.deepEqual(await runReview(provider, "p"), { summary: "recovered", comments: [] });
+  assert.equal(attempts, 2);
+});
+
+test("runReview surfaces the error when the retry also fails", async () => {
+  let attempts = 0;
+  const provider: ReviewProvider = {
+    name: "broken",
+    validateConfig() {},
+    async run(): Promise<never> {
+      attempts += 1;
+      throw new Error("boom");
+    },
+  };
+
+  await assert.rejects(() => runReview(provider, "p"), /boom/);
+  assert.equal(attempts, 2, "exactly one retry, not an infinite loop");
 });

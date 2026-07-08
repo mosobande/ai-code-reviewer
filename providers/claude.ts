@@ -8,6 +8,7 @@
 import type { ReviewProvider, ReviewRunOpts } from "../provider.ts";
 import { BASE_ENV_ALLOWLIST } from "../runtime/spawn.ts";
 import { createCliBackedProvider, type CliProviderConfig } from "./cli.ts";
+import schema from "./review.schema.json" with { type: "json" };
 
 /** Default model when CLAUDE_MODEL is unset. */
 const DEFAULT_MODEL = "claude-sonnet-4-6";
@@ -50,6 +51,10 @@ export function createClaudeCliConfig(env: NodeJS.ProcessEnv): CliProviderConfig
       const args = [
         "-p",
         "--output-format", "json",
+        // Enforce the review contract at the CLI layer: the model delivers its reply
+        // through a schema-validated tool call instead of free text, so unescaped
+        // quotes, truncation, or stray prose can't produce unparseable JSON.
+        "--json-schema", JSON.stringify(schema),
         "--max-turns", String(opts.maxTurns ?? 1),
         "--model", model,
       ];
@@ -58,10 +63,13 @@ export function createClaudeCliConfig(env: NodeJS.ProcessEnv): CliProviderConfig
       return args;
     },
 
-    parseReply(stdout: string): string {
-      // Claude Code wraps the model's reply in an envelope ({ result, ... }); the
-      // reply itself is the review JSON (possibly fenced), parsed by parseReviewJson.
+    parseReply(stdout: string): unknown {
+      // Claude Code wraps the reply in an envelope. With --json-schema the validated
+      // review object arrives in `structured_output`; when the run errs out before
+      // producing one, fall back to the text reply so the review-contract parser can
+      // surface what actually came back.
       const envelope = JSON.parse(stdout);
+      if (envelope?.structured_output != null) return envelope.structured_output;
       return String(envelope.result ?? "").trim();
     },
   };

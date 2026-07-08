@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { parseReviewJson, type ReviewResult } from "../review.ts";
 import type { ReviewProvider, ReviewRunOpts } from "../provider.ts";
 import { BASE_ENV_ALLOWLIST, buildSubprocessEnv } from "../runtime/spawn.ts";
-import schema from "./codex-review.schema.json" with { type: "json" };
+import schema from "./review.schema.json" with { type: "json" };
 
 const DEFAULT_TIMEOUT_MS_PER_TURN = 60_000;
 const REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);

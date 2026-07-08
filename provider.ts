@@ -19,7 +19,18 @@ export async function runReview(
   prompt: string,
   opts: ReviewRunOpts = {},
 ): Promise<ReviewResult> {
-  return provider.run(prompt, opts);
+  try {
+    return await provider.run(prompt, opts);
+  } catch (err) {
+    // Model replies are non-deterministic, so a malformed reply or transient CLI
+    // failure usually succeeds on a fresh attempt. One retry keeps a single bad
+    // reply from failing the whole review and forcing a manual re-request.
+    console.warn(
+      `[${provider.name}] review attempt failed; retrying once:`,
+      err instanceof Error ? err.message : err,
+    );
+    return provider.run(prompt, opts);
+  }
 }
 
 export function selectProvider(name: string | undefined): ReviewProvider {
