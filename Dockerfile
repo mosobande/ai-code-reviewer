@@ -8,10 +8,14 @@
 FROM node:22-slim
 
 # curl is for the container HEALTHCHECK; git is for deep reviews (cloning the PR).
-# ca-certificates supplies the system CA bundle git needs to verify github.com over
-# HTTPS — the slim base omits it, so without this a clone fails cert verification.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl git ca-certificates \
+# The slim base starts without a CA bundle and its Debian sources use HTTP. This
+# server permits HTTPS egress only, so bootstrap the signed ca-certificates package
+# without TLS peer verification, then use normal verified HTTPS for all later APT.
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+  && apt-get -o Acquire::https::Verify-Peer=false update \
+  && apt-get -o Acquire::https::Verify-Peer=false install -y --no-install-recommends ca-certificates \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends curl git \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
