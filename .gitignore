@@ -23,8 +23,19 @@ data/
 npm-debug.log*
 yarn-error.log*
 
+# Agent tool state. Track only the shared skill source and compatibility links.
+!.agents/
+.agents/*
+!.agents/skills/
+!.agents/skills/**
+!.claude/
+.claude/*
+!.claude/skills
+!.codex/
+.codex/*
+!.codex/skills
+
 # Claude Code local state
-.claude/settings.local.json
 .claude.json
 
 # Editor / OS
