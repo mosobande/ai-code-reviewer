@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runReview, selectProvider, type ReviewProvider } from "../provider.ts";
+import {
+  ReviewTimeoutError,
+  effectiveReviewTimeoutMs,
+  runReview,
+  selectProvider,
+  type ReviewProvider,
+} from "../provider.ts";
 import { createClaudeCliConfig, createClaudeProvider, CLAUDE_ENV_ALLOWLIST } from "../providers/claude.ts";
 import { buildSubprocessEnv } from "../runtime/spawn.ts";
 import { createCliBackedProvider } from "../providers/cli.ts";
@@ -182,4 +188,172 @@ test("runReview surfaces the error when the retry also fails", async () => {
 
   await assert.rejects(() => runReview(provider, "p"), /boom/);
   assert.equal(attempts, 2, "exactly one retry, not an infinite loop");
+});
+
+test("provider execution defaults to 30 minutes and provider configuration wins", () => {
+  assert.equal(effectiveReviewTimeoutMs("claude", {}), 1_800_000);
+  assert.equal(effectiveReviewTimeoutMs("claude", { REVIEW_TIMEOUT_SECONDS: "90" }), 90_000);
+  assert.equal(
+    effectiveReviewTimeoutMs("claude", {
+      REVIEW_TIMEOUT_SECONDS: "90",
+      CLAUDE_TIMEOUT_SECONDS: "12",
+    }),
+    12_000,
+  );
+  assert.equal(
+    effectiveReviewTimeoutMs("codex", {
+      REVIEW_TIMEOUT_SECONDS: "90",
+      CODEX_TIMEOUT_SECONDS: "600",
+    }),
+    600_000,
+  );
+});
+
+test("provider execution rejects invalid timeout configuration before an attempt", async () => {
+  for (const value of ["0", "-1", "1.5", "abc", String(Number.MAX_SAFE_INTEGER + 1)]) {
+    let attempts = 0;
+    const provider: ReviewProvider = {
+      name: "claude",
+      validateConfig() {},
+      async run() {
+        attempts += 1;
+        return { summary: "unexpected", comments: [] };
+      },
+    };
+
+    await assert.rejects(
+      () => runReview(provider, "p", {}, { env: { REVIEW_TIMEOUT_SECONDS: value } }),
+      /REVIEW_TIMEOUT_SECONDS must be a positive safe integer/,
+    );
+    assert.equal(attempts, 0);
+  }
+});
+
+test("automatic retry receives a fresh signal with only the remaining shared budget", async () => {
+  let now = 10_000;
+  const remaining: number[] = [];
+  const signals: AbortSignal[] = [];
+  let attempts = 0;
+  const provider: ReviewProvider = {
+    name: "claude",
+    validateConfig() {},
+    async run(_prompt, opts) {
+      attempts += 1;
+      assert.ok(opts?.signal);
+      signals.push(opts.signal);
+      if (attempts === 1) {
+        now += 12_000;
+        throw new Error("transient malformed reply");
+      }
+      return { summary: "recovered", comments: [] };
+    },
+  };
+
+  const result = await runReview(provider, "p", {}, {
+    env: { REVIEW_TIMEOUT_SECONDS: "30" },
+    now: () => now,
+    createAttemptSignal(timeoutMs) {
+      remaining.push(timeoutMs);
+      return { signal: new AbortController().signal, dispose() {} };
+    },
+  });
+
+  assert.deepEqual(result, { summary: "recovered", comments: [] });
+  assert.deepEqual(remaining, [30_000, 18_000]);
+  assert.equal(attempts, 2);
+  assert.notEqual(signals[0], signals[1]);
+});
+
+test("a provider timeout is not retried", async () => {
+  let attempts = 0;
+  const provider: ReviewProvider = {
+    name: "claude",
+    validateConfig() {},
+    async run(_prompt, opts) {
+      attempts += 1;
+      assert.equal(opts?.signal?.aborted, true);
+      throw opts?.signal?.reason;
+    },
+  };
+
+  await assert.rejects(
+    () => runReview(provider, "p", {}, {
+      env: { CLAUDE_TIMEOUT_SECONDS: "1" },
+      createAttemptSignal() {
+        return { signal: AbortSignal.abort(new ReviewTimeoutError("claude", 1000)), dispose() {} };
+      },
+    }),
+    /claude review exceeded its 1-second execution budget/,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("an already-cancelled caller does not start a provider attempt", async () => {
+  const caller = new AbortController();
+  caller.abort(new Error("deployment stopping"));
+  let attempts = 0;
+  const provider: ReviewProvider = {
+    name: "claude",
+    validateConfig() {},
+    async run(_prompt, opts) {
+      attempts += 1;
+      assert.equal(opts?.signal?.aborted, true);
+      throw opts?.signal?.reason;
+    },
+  };
+
+  await assert.rejects(() => runReview(provider, "p", { signal: caller.signal }), /deployment stopping/);
+  assert.equal(attempts, 0);
+});
+
+test("caller cancellation cannot slip between the shared pre-check and listener registration", async () => {
+  const caller = new AbortController();
+  const signal = caller.signal as AbortSignal & {
+    addEventListener: AbortSignal["addEventListener"];
+  };
+  const addEventListener = signal.addEventListener.bind(signal);
+  signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => {
+    caller.abort(new Error("cancelled during registration"));
+    return addEventListener(...args);
+  }) as AbortSignal["addEventListener"];
+
+  let attempts = 0;
+  const provider: ReviewProvider = {
+    name: "claude",
+    validateConfig() {},
+    async run(_prompt, opts) {
+      attempts += 1;
+      assert.equal(opts?.signal?.aborted, true);
+      throw opts?.signal?.reason;
+    },
+  };
+
+  await assert.rejects(
+    () => runReview(provider, "p", { signal }),
+    /cancelled during registration/,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("a configured deadline aborts a hanging CLI provider without retrying", async () => {
+  let attempts = 0;
+  const provider = createCliBackedProvider({
+    name: "claude",
+    command: process.execPath,
+    sourceEnv: { PATH: process.env.PATH ?? "" },
+    envAllowlist: ["PATH"],
+    buildArgs() {
+      attempts += 1;
+      return ["-e", "setInterval(() => {}, 1000)"];
+    },
+    parseReply: (stdout) => stdout,
+  });
+
+  const started = Date.now();
+  await assert.rejects(
+    () => runReview(provider, "p", {}, { env: { CLAUDE_TIMEOUT_SECONDS: "1" } }),
+    /claude review exceeded its 1-second execution budget/,
+  );
+  assert.equal(attempts, 1);
+  assert.ok(Date.now() - started < 2_500, "deadline terminates the CLI promptly");
 });
