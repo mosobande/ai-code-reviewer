@@ -25,6 +25,17 @@ type GithubContext = {
 
 const REQUIRED_ENV = ["GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET"] as const;
 
+export type GithubProviderDeps = {
+  createApp?: (options: ConstructorParameters<typeof App>[0]) => App;
+};
+
+function commaSeparatedValues(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 /**
  * Restore the GitHub App private key from its env var. Accepts a PEM with real
  * newlines, a `\n`-escaped one-liner, or base64(PEM). base64 is preferred for
@@ -38,16 +49,28 @@ export function loadAppPrivateKey(raw: string): string {
 }
 
 /** Build a GitHub provider bound to the configured App credentials and reviewer logins. */
-export function createGithubProvider(env: NodeJS.ProcessEnv): RepositoryProvider {
+export function createGithubProvider(
+  env: NodeJS.ProcessEnv,
+  deps: GithubProviderDeps = {},
+): RepositoryProvider {
   // Accounts whose requested review triggers a review. REVIEWER_LOGIN may be a single
   // login or a comma-separated list (e.g. "ayewobot,inspiredstuffs"), matched
   // case-insensitively.
-  const reviewerLogins = new Set(
-    (env.REVIEWER_LOGIN ?? "")
-      .split(",")
-      .map((login) => login.trim().toLowerCase())
-      .filter(Boolean),
+  const reviewerLogins = new Set(commaSeparatedValues(env.REVIEWER_LOGIN));
+  const ownerScopes = commaSeparatedValues(env.GITHUB_ALLOWED_OWNERS);
+  const invalidOwnerScopes = ownerScopes.filter((scope) => !/^[^/\s]+$/.test(scope));
+  const allowedOwners = new Set(ownerScopes);
+  const repositoryScopes = commaSeparatedValues(env.GITHUB_ALLOWED_REPOSITORIES);
+  const invalidRepositoryScopes = repositoryScopes.filter(
+    (scope) => !/^[^/\s]+\/[^/\s]+$/.test(scope),
   );
+  const allowedRepositories = new Set(repositoryScopes);
+
+  const repositoryAllowed = (owner: string, repo: string): boolean => {
+    const normalizedOwner = owner.toLowerCase();
+    const normalizedRepository = `${normalizedOwner}/${repo.toLowerCase()}`;
+    return allowedOwners.has(normalizedOwner) || allowedRepositories.has(normalizedRepository);
+  };
 
   // Built in init() — needs the private key, which an empty test env won't have.
   let app: App | undefined;
@@ -81,10 +104,28 @@ export function createGithubProvider(env: NodeJS.ProcessEnv): RepositoryProvider
       if (reviewerLogins.size === 0) {
         throw new Error("REVIEWER_LOGIN must list at least one login for REPO_PROVIDER=github.");
       }
+      if (allowedOwners.size === 0 && allowedRepositories.size === 0) {
+        throw new Error(
+          "GITHUB_ALLOWED_OWNERS or GITHUB_ALLOWED_REPOSITORIES must list at least one scope " +
+            "for REPO_PROVIDER=github.",
+        );
+      }
+      if (invalidRepositoryScopes.length > 0) {
+        throw new Error(
+          "GITHUB_ALLOWED_REPOSITORIES must contain owner/repo entries; invalid: " +
+            invalidRepositoryScopes.join(", "),
+        );
+      }
+      if (invalidOwnerScopes.length > 0) {
+        throw new Error(
+          "GITHUB_ALLOWED_OWNERS must contain owner names; invalid: " + invalidOwnerScopes.join(", "),
+        );
+      }
     },
 
     async init(): Promise<void> {
-      app = new App({
+      const createApp = deps.createApp ?? ((options: ConstructorParameters<typeof App>[0]) => new App(options));
+      app = createApp({
         appId: env.GITHUB_APP_ID!,
         privateKey: loadAppPrivateKey(env.GITHUB_APP_PRIVATE_KEY!),
         webhooks: { secret: env.GITHUB_WEBHOOK_SECRET! },
@@ -108,6 +149,13 @@ export function createGithubProvider(env: NodeJS.ProcessEnv): RepositoryProvider
       const requested: string | undefined = payload.requested_reviewer?.login;
       if (!requested || !reviewerLogins.has(requested.toLowerCase())) return null;
 
+      const owner: string = payload.repository.owner.login;
+      const repo: string = payload.repository.name;
+      if (!repositoryAllowed(owner, repo)) {
+        console.warn(`[github] ignored review request outside allowlist: ${owner}/${repo}`);
+        return null;
+      }
+
       const installationId: number | undefined = payload.installation?.id;
       // Installation-scoped client for this delivery (posting the review, clearing the
       // request). Falls back to an unauthenticated client only if there's no
@@ -119,8 +167,8 @@ export function createGithubProvider(env: NodeJS.ProcessEnv): RepositoryProvider
       const pr = payload.pull_request;
       return {
         ref: {
-          owner: payload.repository.owner.login,
-          repo: payload.repository.name,
+          owner,
+          repo,
           pull_number: pr.number,
           head_sha: pr.head.sha,
         },
