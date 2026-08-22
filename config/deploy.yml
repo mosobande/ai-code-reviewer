@@ -63,6 +63,10 @@ env:
     REVIEW_TIMEOUT_SECONDS: "<%= ENV.fetch('REVIEW_TIMEOUT_SECONDS', '1800') %>"
     CLAUDE_TIMEOUT_SECONDS: "<%= ENV.fetch('CLAUDE_TIMEOUT_SECONDS', '') %>"
     CODEX_TIMEOUT_SECONDS: "<%= ENV.fetch('CODEX_TIMEOUT_SECONDS', '') %>"
+    # GitHub requires at least one owner or exact repository scope. GitLab ignores
+    # these values.
+    GITHUB_ALLOWED_OWNERS: "<%= ENV.fetch('GITHUB_ALLOWED_OWNERS', '') %>"
+    GITHUB_ALLOWED_REPOSITORIES: "<%= ENV.fetch('GITHUB_ALLOWED_REPOSITORIES', '') %>"
     BOT_NAME: <%= ENV.fetch('BOT_NAME', 'Alátùńwò AI') %>
     # Deep reviews clone the PR so the model can read surrounding files (read-only
     # tools). Off by default; set DEEP_REVIEW=true to enable. See README "Deep reviews".
