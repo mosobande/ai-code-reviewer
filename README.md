@@ -1,247 +1,62 @@
 # Alátùńwò AI Code Reviewer
 
-A self-hosted webhook service that reviews pull/merge requests with an AI provider
-— Copilot-style. Install it once across your account/org; whenever a designated
-reviewer is requested on a change, the service pulls the diff, runs the review on
-your subscription, and posts inline review comments.
+A self-hosted webhook service that reviews pull and merge requests with Claude or Codex. Install the service across an account or organization, then request a designated reviewer on a change. The service retrieves the diff, runs the AI review, and posts inline comments.
 
-Unlike a CI workflow, there is **no per-repo config file**. The service listens to
-webhooks for every repo it's installed on.
+Unlike a CI workflow, the reviewer does not require a configuration file in each repository. One service receives webhooks for every repository on which its GitHub App or GitLab integration is installed.
 
-**Two pluggable seams.** The **AI provider** (the review engine) and the
-**repository provider** (the code host) are both swappable:
+## How reviews work
 
-- **AI provider** — **Claude** (via the Claude Code CLI) is the default; **Codex**
-  (via the official `@openai/codex-sdk`) is also supported. Seam: `provider.ts`,
-  `providers/<name>.ts`. Select with `AI_PROVIDER` (default `claude`).
-- **Repository provider** — **GitHub** (a GitHub App, default) and **GitLab** (a
-  bot access token). One host per deploy. Seam: `repository.ts`,
-  `repositories/<name>.ts`. Select with `REPO_PROVIDER` (default `github`). The
-  webhook lands on `/api/<provider>/webhooks`.
-
-## How it works
-
-```
-PR/MR: "Request review from <the bot>"
-        │  (GitHub pull_request.review_requested / GitLab MR reviewer|assignee added)
-        ▼
-  This service  ──►  ack immediately; dedupe this head SHA (SQLite); enqueue
-        │
-        ├──►  fetch the diff (repository provider)
-        │
-        ├──►  selected AI provider (Claude CLI by default, Codex SDK optional)
-        │            returns JSON: { summary, comments[] }
-        ▼
-  POST a single review with inline comments; record the outcome
+```text
+review requested
+      |
+      v
+GitHub App or GitLab webhook -> verify -> scope check -> reserve head SHA -> queue
+                                                                     |
+                                                                     v
+                                                        Claude CLI or Codex SDK
+                                                                     |
+                                                                     v
+                                               post review -> record in SQLite
 ```
 
-## What the review covers
+The identities have separate jobs:
 
-The reviewer is **language-agnostic** — it detects the stack from the diff and
-applies that language's idioms, so the same rubric works for any codebase. Each
-review weighs correctness/logic bugs, edge cases and error handling, security,
-performance, API/contract changes, missing tests, and maintainability — and
-deliberately skips pure formatting a linter already enforces. The PR title and
-description are fed in (as untrusted data) so it can judge whether the change does
-what it claims. Findings are graded `blocker` / `warn` / `info`, and the summary
-leads with what matters. For deeper, context-aware comments, see
-[Deep reviews](#deep-reviews-optional).
+- The GitHub App receives signed webhooks, reads repository contents, and posts the review as `<app-name>[bot]`.
+- A normal GitHub account is the requested reviewer that triggers the service. A GitHub App bot cannot be selected as a pull-request reviewer. Use your account or a dedicated machine user such as `atunwo`.
+- On GitLab, the project or group access token creates a bot user. That bot can be the reviewer or assignee and can post the review.
+- Claude or Codex supplies the review result. The service does not pass repository credentials to the AI subprocess.
 
-## 1. Set up the repository provider
+The service runs one instance and one provider execution at a time. Do not scale it to multiple replicas without replacing the in-process queue and local SQLite store.
 
-Pick one host and set `REPO_PROVIDER` accordingly. The trigger is the same idea on
-both: a designated bot account is asked to review, and the service reacts.
+## Choose a deployment path
 
-### GitHub (`REPO_PROVIDER=github`)
+Both paths run the same image and preserve the same application state.
 
-Settings → Developer settings → **GitHub Apps** → New GitHub App.
+| Choose | Build and delivery | TLS proxy | Application registry |
+| --- | --- | --- | --- |
+| [Docker Compose and Caddy](docs/deploy-compose.md) | Build on the server | Caddy | None |
+| [Kamal and GHCR](docs/deploy-kamal.md) | Build on the server and push through GHCR | Kamal Proxy | GHCR and a package-write token |
 
-- **Webhook URL:** `https://YOUR_HOST/api/github/webhooks`
-- **Webhook secret:** a long random string (also goes in `.env`)
-- **Repository permissions:**
-  - Pull requests: **Read & write** (read the diff, post the review)
-  - Contents: **Read-only** (lets you later check out files for deeper review)
-  - Metadata: **Read-only** (mandatory)
-- **Subscribe to events:** **Pull request**
-- After creating: note the **App ID**, generate a **private key** (.pem), then
-  **Install** the App on your account and choose **All repositories**.
+Use Compose for one VM and the shortest setup. Use Kamal for registry-backed releases and Kamal's deployment lifecycle.
 
-> **Security — keep the App private.** Set the App to **"Only on this account"**
-> (not public/installable by others). The trigger is just a reviewer login, which
-> is public knowledge once this repo is open-source. If anyone could install the
-> App, they could open PRs requesting your reviewer login and loop them to drain
-> your Claude subscription. A private App is the primary defense; the service does
-> not yet enforce an installation/owner allowlist.
+Production deployment requires a domain. Point an `A` record, such as `reviewer.example.com`, to the VM before you start the proxy. GitHub and GitLab must reach a public HTTPS webhook endpoint. Local development can run without a domain.
 
-### GitLab (`REPO_PROVIDER=gitlab`)
+## Documentation
 
-GitLab has no first-party App model; the bot is a user backed by an access token.
+- [Configure GitHub, GitLab, Claude, Codex, deadlines, and deep reviews](docs/configuration.md)
+- [Deploy with Docker Compose and Caddy](docs/deploy-compose.md)
+- [Deploy with Kamal and GHCR](docs/deploy-kamal.md)
+- [Verify, operate, and troubleshoot the reviewer](docs/operations.md)
+- [Use the portable deployment skill](.agents/skills/deploy-ai-code-reviewer/SKILL.md)
 
-1. Create a **Project** or **Group access token** (Settings → Access tokens) with
-   scopes **`api`** and **`read_repository`**. Its associated bot user (e.g.
-   `project_<id>_bot`) is what you add as a reviewer. Put the token in `GITLAB_TOKEN`.
-   The bot's identity is resolved from the token at startup (`GET /user`), so there's
-   no `REVIEWER_LOGIN` on GitLab.
-2. Add a **webhook** (Settings → Webhooks) → URL `https://YOUR_HOST/api/gitlab/webhooks`,
-   **Secret token** = `GITLAB_WEBHOOK_SECRET` (a long random string), and tick
-   **Merge request events**.
-3. For **self-managed** GitLab, set `GITLAB_API_URL` to your instance
-   (e.g. `https://gitlab.example.com`); it defaults to `https://gitlab.com`.
-
-**Trigger:** add the bot as a **reviewer** (GitLab Premium) **or assignee** (works on
-Free tier) on a merge request. Re-requesting a review fires it again on a new commit.
-
-> **Security — keep the bot scoped.** The token grants whatever its project/group
-> allows; prefer a Project access token over a Personal one, and scope it to the
-> repos you actually review. As with GitHub, the trigger (a reviewer) is public, so
-> don't expose the bot on projects where strangers can open MRs against it.
-
-## 2. Set up the AI provider
-
-### Claude (`AI_PROVIDER=claude`)
-
-On any machine with a browser:
+## Local development
 
 ```bash
-npm i -g @anthropic-ai/claude-code
-claude setup-token        # complete the OAuth flow; copy the printed token
-```
-
-Put it in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`. It's valid ~1 year and bills to
-your Pro/Max plan. (On a browserless server, run `setup-token` on your laptop and
-copy the token over, or SSH-forward the OAuth callback port.)
-
-### Codex (`AI_PROVIDER=codex`)
-
-Codex runs through the official `@openai/codex-sdk` package. The SDK wraps the
-Codex runtime from `@openai/codex`, which is installed as a production dependency;
-you do not need to install a separate global `codex` binary for this service.
-
-For deep reviews, the service starts the SDK thread with the checked-out PR/MR
-head as the working directory. User config loads by default; set
-`CODEX_MODEL=gpt-5.5` to override the configured model.
-
-Auth precedence:
-
-- `CODEX_API_KEY` wins when set. This is the simplest automation mode for the SDK.
-- Otherwise Codex uses CLI auth/config under `CODEX_HOME` when set.
-- Otherwise `CODEX_ACCESS_TOKEN` can provide trusted automation/subscription auth.
-  This is the Codex/ChatGPT access-token path, operationally closest to the
-  Claude `CLAUDE_CODE_OAUTH_TOKEN` setup.
-- If none are set, Codex falls back to the default `~/.codex` path, so the host
-  must already be logged in with `codex login`.
-
-Supported Codex tunables:
-
-- `CODEX_MODEL`: model override for the review thread.
-- `CODEX_REASONING_EFFORT`: one of `minimal`, `low`, `medium`, `high`, `xhigh`.
-- `CODEX_WEB_SEARCH_MODE`: one of `disabled`, `cached`, `live`; deploys default
-  this to `disabled`.
-- `CODEX_BASE_URL`: alternate OpenAI-compatible API base URL.
-
-The Codex docs call this token `CODEX_ACCESS_TOKEN`. For ephemeral automation,
-store it as an environment secret. For persistent cached CLI auth, seed the host
-once with:
-
-```bash
-printf '%s' "$CODEX_ACCESS_TOKEN" | codex login --with-access-token
-```
-
-Safety: Codex runs with a read-only sandbox, approval mode `never`, and structured
-output schema support. The SDK subprocess env forwards only base infra vars plus
-Codex auth/config vars (`CODEX_HOME`, `CODEX_SQLITE_HOME`, `CODEX_ACCESS_TOKEN`,
-`CODEX_API_KEY`, `CODEX_CA_CERTIFICATE`, `RUST_LOG`); repository provider secrets
-and Claude/Anthropic secrets are not forwarded. `CODEX_HOME` and
-`CODEX_SQLITE_HOME` remain Codex runtime details, not app-level configuration.
-
-## 3. Configure
-
-```bash
-cp .env.example .env      # set REPO_PROVIDER + that host's block, and one AI provider
+cp .env.example .env
 npm install
-```
-
-## 4. Host it
-
-The service needs Node 18+ and, for `AI_PROVIDER=claude`, the Claude Code CLI. For
-`AI_PROVIDER=codex`, the Codex runtime is provided by production npm dependencies.
-Use a container or a small VPS, not a thin serverless function.
-
-```bash
-npm i -g @anthropic-ai/claude-code   # on the host, for AI_PROVIDER=claude
+npm test
+npm run typecheck
 npm start
 ```
 
-Put it behind HTTPS (Caddy/nginx, or your platform's TLS). The public URL must
-match the App's Webhook URL. For local testing, use a tunnel (e.g. smee.io or
-cloudflared) as the Webhook URL.
-
-## Reliability
-
-These are implemented, not aspirational:
-
-- **Fast ack + background queue:** hosts fail a webhook they can't answer within
-  ~10s and retry it. The service acks the delivery immediately and runs the
-  review in the background, serialised through a one-at-a-time queue so only a
-  single AI provider subprocess runs at once (predictable memory on a small box).
-- **Idempotency & audit log:** every requested review is recorded in a SQLite
-  store keyed by the change's head SHA, so webhook retries — and process restarts —
-  never produce duplicate reviews. On GitLab this also absorbs the noise of the
-  generic MR-update event firing more than once. The same table doubles as an audit
-  log (status, summary, error, timestamps). A failed review stays retryable:
-  re-request the review to try the same commit again. Set `DATABASE_PATH` (defaults
-  to `./data/reviews.db`); in a container, point it at a mounted volume so it
-  survives redeploys — already wired in `config/deploy.yml`.
-- **Bad inline comments degrade gracefully:** if the model comments on a line
-  outside the diff, GitHub rejects the whole review and the code falls back to a
-  summary-only comment; GitLab posts each comment separately, so a rejected one is
-  skipped and the rest (plus the summary) still land.
-
-## Limits
-
-- **Trigger identity:** on GitHub a custom App can't be *added* as a reviewer like
-  Copilot (that's first-party only) — request **yourself** or a dedicated
-  machine-user as reviewer and set that account in `REVIEWER_LOGIN`. On GitLab the
-  bot **is** a user, so you add it as a reviewer/assignee directly; its identity
-  comes from `GITLAB_TOKEN`. Either way the service posts under its own identity.
-- **Usage:** headless reviews draw from your subscription's normal usage limits.
-  `--max-turns 1` (already set) keeps each review to a single pass. Watch your
-  quota if many PRs come through.
-- **Single instance:** the in-process queue and the local SQLite file both assume
-  exactly one running instance. Don't scale to multiple replicas without moving
-  the queue and store onto shared infrastructure.
-- **Unbounded, in-memory queue:** reviews run one at a time (queue concurrency 1),
-  but the backlog is unbounded and lives in memory. A burst of requests grows
-  memory and latency with no backpressure, and a restart drops everything still
-  queued — those rows are recovered to `failed` at boot, so each dropped PR must
-  be re-requested. Fine for personal / small-org use; for heavier load, add a
-  bounded queue that posts a "busy, please re-request" notice rather than raising
-  concurrency (which trades away the predictable-memory guarantee).
-
-## Deep reviews (optional)
-
-By default a review sees only the unified diff. A deep review instead clones the
-change head and lets the AI provider open **surrounding files** (definitions, call sites,
-tests) for richer, context-aware comments.
-
-- **Per change:** add the `deep-review` label to a PR/MR. The next time the bot is
-  requested (or re-requested) as reviewer, that change gets a deep review.
-- **Globally:** set `DEEP_REVIEW=true` to make every review deep. The label still
-  works; it just opts individual changes in when the global default is off.
-
-- **How it works:** the repository provider fetches the change head into a throwaway
-  temp dir — shallow, fork-agnostic (`pull/<n>/head` on GitHub via a short-lived
-  contents:read installation token; `merge-requests/<iid>/head` on GitLab via the
-  bot token). The provider runs against that checkout with a raised turn budget
-  where supported (`DEEP_REVIEW_MAX_TURNS`, default 8); the temp dir is always
-  removed afterward.
-- **Security:** Claude gets **read-only** tools (`Read`, `Grep`, `Glob`) — never
-  `Bash`/`Write`/`Edit`; Codex runs with `--sandbox read-only` and
-  `--ask-for-approval never`. Untrusted code is read, never executed. The token is
-  passed via `GIT_CONFIG_*` env, so it never lands in `.git/config` or the process
-  list. The worst case from a malicious change is a wrong comment, not RCE.
-- **Cost:** every deep review clones a repo and uses multiple turns, drawing more
-  from your subscription than a diff-only pass. Leave it off unless you want it.
-- **Requirements:** `git` on the host (bundled in the image) and read access to repo
-  contents — GitHub App **Contents: Read** / GitLab token **`read_repository`**
-  (already in the setup above).
+Set a public webhook tunnel only for development. Do not put production credentials in a shared tunnel configuration.
