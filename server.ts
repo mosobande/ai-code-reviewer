@@ -124,8 +124,10 @@ async function processReview(req: ReviewRequest, key: string): Promise<void> {
       });
     } finally {
       await removeWorkdir(dir);
+      console.log(`[${key}] deep-review checkout removed`);
     }
   } else {
+    console.log(`[${key}] diff-only review`);
     result = await runReview(aiProvider, buildDiffPrompt(diff, req.intent, repoProvider.changeNoun));
   }
 

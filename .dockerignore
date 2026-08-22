@@ -6,7 +6,9 @@ npm-debug.log*
 .env.*
 *.pem
 .claude.json
+.agents/
 .claude/
+.codex/
 .kamal/
 *.log
 .DS_Store
@@ -15,3 +17,8 @@ build
 Dockerfile
 .dockerignore
 README.md
+docs/
+test/
+config/
+compose*.yml
+.qp/

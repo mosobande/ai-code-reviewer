@@ -7,6 +7,8 @@
 <%
   ssh_user_raw = ENV['SSH_USER'].to_s.strip
   ssh_user     = ssh_user_raw.empty? ? 'deploy' : ssh_user_raw
+  codex_state_path_raw = ENV['CODEX_STATE_PATH'].to_s.strip
+  codex_state_path = codex_state_path_raw.empty? ? "/home/#{ssh_user}/.ai-code-reviewer/codex" : codex_state_path_raw
 %>
 
 service: ai-code-reviewer
@@ -67,6 +69,8 @@ env:
     # these values.
     GITHUB_ALLOWED_OWNERS: "<%= ENV.fetch('GITHUB_ALLOWED_OWNERS', '') %>"
     GITHUB_ALLOWED_REPOSITORIES: "<%= ENV.fetch('GITHUB_ALLOWED_REPOSITORIES', '') %>"
+    # Persisted host mount below keeps Codex CLI OAuth across deploys.
+    CODEX_HOME: "/home/node/.codex"
     BOT_NAME: <%= ENV.fetch('BOT_NAME', 'Alátùńwò AI') %>
     # Deep reviews clone the PR so the model can read surrounding files (read-only
     # tools). Off by default; set DEEP_REVIEW=true to enable. See README "Deep reviews".
@@ -78,6 +82,7 @@ env:
 # creates /data node-owned (see Dockerfile) so the fresh named volume is writable.
 volumes:
   - "ai_code_reviewer_data:/data"
+  - "<%= codex_state_path %>:/home/node/.codex"
 
 # Hosts listed for legibility; the per-env file supplies the required array.
 servers:

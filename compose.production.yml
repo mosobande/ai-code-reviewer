@@ -1,0 +1,92 @@
+# Single-VM quick deployment. Docker builds the source tree on the server and runs
+# the local image directly; no application registry is involved.
+name: ai-code-reviewer
+
+services:
+  prepare:
+    image: alpine:3.22.1
+    restart: "no"
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /state/data /state/codex && chown -R 1000:1000 /state/data /state/codex"]
+    volumes:
+      - ./data:/state/data
+      - ./codex:/state/codex
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-code-reviewer:local
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    environment:
+      PORT: "${PORT:-3000}"
+      DATABASE_PATH: "${DATABASE_PATH:-/data/reviews.db}"
+      REPO_PROVIDER: "${REPO_PROVIDER:-github}"
+      GITHUB_APP_ID: "${GITHUB_APP_ID:-}"
+      GITHUB_APP_PRIVATE_KEY: "${GITHUB_APP_PRIVATE_KEY:-}"
+      GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET:-}"
+      REVIEWER_LOGIN: "${REVIEWER_LOGIN:-}"
+      GITHUB_ALLOWED_OWNERS: "${GITHUB_ALLOWED_OWNERS:-}"
+      GITHUB_ALLOWED_REPOSITORIES: "${GITHUB_ALLOWED_REPOSITORIES:-}"
+      GITLAB_TOKEN: "${GITLAB_TOKEN:-}"
+      GITLAB_WEBHOOK_SECRET: "${GITLAB_WEBHOOK_SECRET:-}"
+      GITLAB_API_URL: "${GITLAB_API_URL:-https://gitlab.com}"
+      AI_PROVIDER: "${AI_PROVIDER:-claude}"
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+      CLAUDE_MODEL: "${CLAUDE_MODEL:-claude-sonnet-4-6}"
+      CODEX_API_KEY: "${CODEX_API_KEY:-}"
+      CODEX_ACCESS_TOKEN: "${CODEX_ACCESS_TOKEN:-}"
+      CODEX_MODEL: "${CODEX_MODEL:-}"
+      CODEX_REASONING_EFFORT: "${CODEX_REASONING_EFFORT:-}"
+      CODEX_WEB_SEARCH_MODE: "${CODEX_WEB_SEARCH_MODE:-disabled}"
+      CODEX_BASE_URL: "${CODEX_BASE_URL:-}"
+      CODEX_HOME: "/home/node/.codex"
+      REVIEW_TIMEOUT_SECONDS: "${REVIEW_TIMEOUT_SECONDS:-1800}"
+      CLAUDE_TIMEOUT_SECONDS: "${CLAUDE_TIMEOUT_SECONDS:-}"
+      CODEX_TIMEOUT_SECONDS: "${CODEX_TIMEOUT_SECONDS:-}"
+      BOT_NAME: "${BOT_NAME:-Alátùńwò AI}"
+      DEEP_REVIEW: "${DEEP_REVIEW:-false}"
+      DEEP_REVIEW_MAX_TURNS: "${DEEP_REVIEW_MAX_TURNS:-8}"
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    volumes:
+      - ./data:/data
+      - ./codex:/home/node/.codex
+    mem_limit: 1500m
+    mem_reservation: 512m
+    cpus: 1.5
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+
+  proxy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    environment:
+      PROXY_HOST: "${PROXY_HOST:?PROXY_HOST must be set in the production env file}"
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

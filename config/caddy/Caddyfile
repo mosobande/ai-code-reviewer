@@ -1,0 +1,6 @@
+# Caddy obtains and renews TLS after PROXY_HOST resolves to this VM and inbound
+# TCP/80 and TCP/443 reach the proxy.
+{$PROXY_HOST} {
+  encode zstd gzip
+  reverse_proxy app:3000
+}

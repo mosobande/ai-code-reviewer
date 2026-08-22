@@ -14,6 +14,12 @@
 servers:
   web:
     hosts: <%= web_hosts %>
+    # This VM may host other services. Keep one review from consuming it all.
+    options:
+      memory: 1500m
+      memory-reservation: 512m
+      cpus: 1.5
+      pids-limit: 256
 
 proxy:
   ssl: true
@@ -27,6 +33,8 @@ proxy:
 # from its datacenter link. Local cross-builds from an arm64 Mac were slow and the
 # push from a home uplink hit ghcr's registry deadline.
 builder:
+  # Never fall back to the operator's machine.
+  local: false
   remote: ssh://<%= ENV.fetch('SSH_USER', 'deploy') %>@<%= web_hosts.first %>
   # ghcr rejected the multi-manifest index buildx pushes by default; drop the
   # provenance/SBOM attestations so a single, reliable manifest is pushed.
