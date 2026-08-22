@@ -33,7 +33,9 @@ export function createCliBackedProvider(config: CliProviderConfig): ReviewProvid
 
     async run(prompt: string, opts: ReviewRunOpts = {}): Promise<ReviewResult> {
       const env = buildSubprocessEnv(config.sourceEnv ?? process.env, config.envAllowlist);
-      const stdout = await spawnText(config.command, config.buildArgs(opts), env, prompt);
+      const stdout = await spawnText(config.command, config.buildArgs(opts), env, prompt, {
+        signal: opts.signal,
+      });
       try {
         const reply = config.parseReply(stdout);
         return typeof reply === "string" ? parseReviewJson(reply) : coerceReviewResult(reply);

@@ -31,7 +31,7 @@ import {
   shouldDeepReview,
   type ReviewResult,
 } from "./review.ts";
-import { runReview, selectProvider } from "./provider.ts";
+import { runReview, selectProvider, validateReviewProvider } from "./provider.ts";
 import { removeWorkdir } from "./clone.ts";
 import { refKey, selectRepositoryProvider, type ReviewRequest } from "./repository.ts";
 
@@ -49,7 +49,7 @@ const {
 // the Claude provider rejects a stray ANTHROPIC_API_KEY that would override the
 // subscription token. Provider-specific wiring lives in providers/<name>.ts.
 const aiProvider = selectProvider(AI_PROVIDER);
-aiProvider.validateConfig(process.env);
+validateReviewProvider(aiProvider, process.env);
 
 // Pick the repository provider (GitHub by default). validateConfig fails fast on
 // missing host credentials; init() (async one-time setup) runs at boot in main().

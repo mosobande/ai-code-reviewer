@@ -60,6 +60,9 @@ env:
     CODEX_REASONING_EFFORT: "<%= ENV.fetch('CODEX_REASONING_EFFORT', '') %>"
     CODEX_WEB_SEARCH_MODE: <%= ENV.fetch('CODEX_WEB_SEARCH_MODE', 'disabled') %>
     CODEX_BASE_URL: "<%= ENV.fetch('CODEX_BASE_URL', '') %>"
+    REVIEW_TIMEOUT_SECONDS: "<%= ENV.fetch('REVIEW_TIMEOUT_SECONDS', '1800') %>"
+    CLAUDE_TIMEOUT_SECONDS: "<%= ENV.fetch('CLAUDE_TIMEOUT_SECONDS', '') %>"
+    CODEX_TIMEOUT_SECONDS: "<%= ENV.fetch('CODEX_TIMEOUT_SECONDS', '') %>"
     BOT_NAME: <%= ENV.fetch('BOT_NAME', 'Alátùńwò AI') %>
     # Deep reviews clone the PR so the model can read surrounding files (read-only
     # tools). Off by default; set DEEP_REVIEW=true to enable. See README "Deep reviews".

@@ -9,7 +9,10 @@ import {
   shouldDeepReview,
   stripFences,
 } from "../review.ts";
-import { buildSubprocessEnv, GIT_ENV_ALLOWLIST } from "../runtime/spawn.ts";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildSubprocessEnv, GIT_ENV_ALLOWLIST, spawnText } from "../runtime/spawn.ts";
 
 test("buildReviewHeader marks a deep review with the bot name, badge, and summary", () => {
   const header = buildReviewHeader("Alátùńwò AI", true, "Looks solid.");
@@ -176,4 +179,82 @@ test("parseReviewJson rejects malformed review contracts", () => {
     () => parseReviewJson('{"summary":"s","comments":[{"path":"a.ts","line":"3","body":"x"}]}'),
     /comments must include path, integer line, body/,
   );
+});
+
+test("spawnText does not impose an application output-size limit", async () => {
+  const stdoutBytes = 4 * 1024 * 1024 + 1;
+  const stderrBytes = 1024 * 1024 + 1;
+  const stdout = await spawnText(
+    process.execPath,
+    [
+      "-e",
+      `process.stdout.write('x'.repeat(${stdoutBytes})); process.stderr.write('e'.repeat(${stderrBytes}))`,
+    ],
+    { PATH: process.env.PATH ?? "" },
+    "",
+  );
+  assert.equal(Buffer.byteLength(stdout), stdoutBytes);
+});
+
+test("spawnText cannot miss cancellation during listener registration", async () => {
+  const controller = new AbortController();
+  const signal = controller.signal as AbortSignal & {
+    addEventListener: AbortSignal["addEventListener"];
+  };
+  const addEventListener = signal.addEventListener.bind(signal);
+  signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => {
+    controller.abort(new Error("cancelled during spawn registration"));
+    return addEventListener(...args);
+  }) as AbortSignal["addEventListener"];
+
+  await assert.rejects(
+    () => spawnText(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { PATH: process.env.PATH ?? "" },
+      "",
+      { signal, killGraceMs: 50 },
+    ),
+    /cancelled during spawn registration/,
+  );
+});
+
+test("spawnText aborts the complete process group and leaves no descendant running", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(join(tmpdir(), "spawn-tree-test-"));
+  const pidFile = join(dir, "descendant.pid");
+  const controller = new AbortController();
+  const script = [
+    "const {spawn}=require('node:child_process')",
+    "const {writeFileSync}=require('node:fs')",
+    "process.on('SIGTERM',()=>{})",
+    "const child=spawn(process.execPath,['-e',\"process.on('SIGTERM',()=>{});setInterval(() => {}, 1000)\"],{stdio:'ignore'})",
+    "writeFileSync(process.argv[1],String(child.pid))",
+    "setInterval(() => {}, 1000)",
+  ].join(";");
+
+  try {
+    const run = spawnText(
+      process.execPath,
+      ["-e", script, pidFile],
+      { PATH: process.env.PATH ?? "" },
+      "",
+      { signal: controller.signal, killGraceMs: 50 },
+    );
+    while (true) {
+      try {
+        await readFile(pidFile, "utf8");
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    }
+    controller.abort(new Error("test cancellation"));
+    await assert.rejects(() => run, /test cancellation/);
+
+    const descendantPid = Number(await readFile(pidFile, "utf8"));
+    assert.throws(() => process.kill(descendantPid, 0), (err: NodeJS.ErrnoException) => err.code === "ESRCH");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

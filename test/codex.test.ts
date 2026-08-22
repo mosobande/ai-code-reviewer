@@ -130,7 +130,8 @@ test("codex provider runs through SDK with output schema and parses finalRespons
     },
   );
 
-  const result = await provider.run("review prompt", { addDir: "/tmp/clone", deep: true });
+  const signal = new AbortController().signal;
+  const result = await provider.run("review prompt", { addDir: "/tmp/clone", deep: true, signal });
 
   assert.deepEqual(result, { summary: "ok", comments: [] });
   assert.equal(capturedPrompt, "review prompt");
@@ -141,7 +142,7 @@ test("codex provider runs through SDK with output schema and parses finalRespons
   assert.equal(capturedThreadOptions?.model, "gpt-5.5");
   assert.equal(capturedThreadOptions?.workingDirectory, "/tmp/clone");
   assert.equal(capturedThreadOptions?.additionalDirectories, undefined);
-  assert.equal(capturedTurnOptions?.signal instanceof AbortSignal, true);
+  assert.equal(capturedTurnOptions?.signal, signal);
   assert.deepEqual(capturedTurnOptions?.outputSchema, schema);
 });
 
@@ -172,15 +173,15 @@ test("codex provider isolates diff-only reviews in a temporary directory and rem
     },
   );
 
-  assert.deepEqual(await provider.run("review prompt"), { summary: "ok", comments: [] });
+  const signal = new AbortController().signal;
+  assert.deepEqual(await provider.run("review prompt", { signal }), { summary: "ok", comments: [] });
   assert.equal(capturedThreadOptions?.skipGitRepoCheck, true);
   assert.equal(capturedThreadOptions?.additionalDirectories, undefined);
   assert.equal(existsSync(tempDir), false, "temp directory is removed after run");
 });
 
-test("codex timeout scales with the review turn budget", () => {
-  assert.equal(__test.reviewTimeoutMs({}), 60_000);
-  assert.equal(__test.reviewTimeoutMs({ maxTurns: 8 }), 480_000);
+test("codex uses the shared caller signal instead of a private per-turn timeout", () => {
+  assert.equal("reviewTimeoutMs" in __test, false);
 });
 
 test("selectProvider returns the Codex provider and Claude remains the default", () => {

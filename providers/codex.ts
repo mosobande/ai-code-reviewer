@@ -14,7 +14,6 @@ import type { ReviewProvider, ReviewRunOpts } from "../provider.ts";
 import { BASE_ENV_ALLOWLIST, buildSubprocessEnv } from "../runtime/spawn.ts";
 import schema from "./review.schema.json" with { type: "json" };
 
-const DEFAULT_TIMEOUT_MS_PER_TURN = 60_000;
 const REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const WEB_SEARCH_MODES = new Set(["disabled", "cached", "live"]);
 
@@ -94,10 +93,6 @@ function threadOptions(env: NodeJS.ProcessEnv, opts: ReviewRunOpts, diffOnlyDir?
   };
 }
 
-function reviewTimeoutMs(opts: ReviewRunOpts): number {
-  return (opts.maxTurns ?? 1) * DEFAULT_TIMEOUT_MS_PER_TURN;
-}
-
 export function createCodexProvider(env: NodeJS.ProcessEnv, deps: CodexProviderDeps = {}): ReviewProvider {
   const createClient = deps.createClient ?? ((options: CodexOptions) => new Codex(options));
 
@@ -130,7 +125,7 @@ export function createCodexProvider(env: NodeJS.ProcessEnv, deps: CodexProviderD
         const thread = client.startThread(threadOptions(env, opts, diffOnlyDir));
         const turn = await thread.run(prompt, {
           outputSchema: schema,
-          signal: AbortSignal.timeout(reviewTimeoutMs(opts)),
+          signal: opts.signal,
         });
         return parseReviewJson(turn.finalResponse);
       } finally {
@@ -143,6 +138,5 @@ export function createCodexProvider(env: NodeJS.ProcessEnv, deps: CodexProviderD
 export const __test = {
   codexClientOptions,
   codexEnvAllowlist,
-  reviewTimeoutMs,
   threadOptions,
 };
