@@ -309,6 +309,30 @@ test("a requested reviewer remains assigned when a PR head synchronizes", async 
   assert.equal(result?.ref.head_sha, "abc123");
 });
 
+test("a retained bot approval triggers a review after the requested reviewer is cleared", async () => {
+  const payload = JSON.parse(reviewRequestedPayload("quantipixels", "skills").toString());
+  payload.action = "synchronize";
+  payload.installation = { id: 19 };
+  payload.pull_request.requested_reviewers = [];
+  let reviews = [{ state: "APPROVED", user: { login: "acr[bot]" } }];
+  const octokit = {
+    rest: { pulls: { listReviews: () => undefined } },
+    paginate: async () => reviews,
+  };
+  const provider = createGithubProvider(FULL_ENV, {
+    appBotLogin: "acr[bot]",
+    createApp: () => ({
+      webhooks: { verify: async () => true },
+      getInstallationOctokit: async () => octokit,
+    } as never),
+  });
+  await provider.init();
+  const headers = { "x-github-event": "pull_request", "x-hub-signature-256": "sha256=test" };
+  assert.equal((await provider.parseWebhook(headers, Buffer.from(JSON.stringify(payload))))?.trigger?.requestedMode, "incremental");
+  reviews = [];
+  assert.equal(await provider.parseWebhook(headers, Buffer.from(JSON.stringify(payload))), null);
+});
+
 test("GitHub reads the live protected target separately from the webhook snapshot", async () => {
   const calls: Array<Record<string, unknown>> = [];
   const octokit = { rest: { pulls: { get: async (input: Record<string, unknown>) => {
@@ -445,13 +469,13 @@ test("exact top-level review commands require a human PR author or collaborator"
 
 test("finding replies target only an owned bot review comment", async () => {
   const parent = {
-    user: { login: "pepeye[bot]" }, pull_request_review_id: 12,
+    user: { login: "acr[bot]" }, pull_request_review_id: 12,
     path: "src/a.ts", line: 7, body: "Fix this edge case",
     pull_request_url: "https://api.github.com/repos/quantipixels/skills/pulls/9",
   };
   let observedParent: typeof parent = parent;
   const provider = createGithubProvider(FULL_ENV, {
-    appBotLogin: "pepeye[bot]",
+    appBotLogin: "acr[bot]",
     createApp: () => ({
       webhooks: { verify: async () => true },
       getInstallationOctokit: async () => ({ rest: { pulls: {
@@ -477,7 +501,7 @@ test("finding replies target only an owned bot review comment", async () => {
   assert.deepEqual((await parse(base))?.trigger, {
     kind: "finding_reply", requestedMode: "targeted", id: "review-comment:43",
     finding: { externalId: "41", path: "src/a.ts", line: 7, conversation: [
-      { author: "pepeye[bot]", body: "Fix this edge case" },
+      { author: "acr[bot]", body: "Fix this edge case" },
       { author: "alice", body: "I fixed this" },
     ] },
   });
@@ -536,7 +560,7 @@ test("approval reconciliation changes only the App bot's own approval", async ()
   const mutations: string[] = [];
   const reviews = [
     { id: 1, state: "APPROVED", user: { login: "human" }, commit_id: "a".repeat(40) },
-    { id: 2, state: "APPROVED", user: { login: "pepeye[bot]" }, commit_id: "a".repeat(40) },
+    { id: 2, state: "APPROVED", user: { login: "acr[bot]" }, commit_id: "a".repeat(40) },
   ];
   const octokit = { rest: { pulls: {
     get: async () => ({ data: livePr(req) }),
@@ -545,7 +569,7 @@ test("approval reconciliation changes only the App bot's own approval", async ()
     createReview: async () => { mutations.push("approve"); },
   } } };
   const req = effectRequest(octokit);
-  const provider = createGithubProvider(FULL_ENV, { appBotLogin: "pepeye[bot]" });
+  const provider = createGithubProvider(FULL_ENV, { appBotLogin: "acr[bot]" });
   await provider.reconcileOwnedApproval(req, "present");
   assert.deepEqual(mutations, []);
   await provider.reconcileOwnedApproval(req, "absent");
@@ -559,7 +583,7 @@ test("walkthrough updates only its marked App-owned issue comment", async () => 
   const mutations: Array<{ action: string; input: Record<string, unknown> }> = [];
   const comments = [
     { id: 1, body: "<!-- acr:walkthrough:v1 -->\nOld", user: { login: "human" } },
-    { id: 2, body: "<!-- acr:walkthrough:v1 -->\nOld", user: { login: "pepeye[bot]" } },
+    { id: 2, body: "<!-- acr:walkthrough:v1 -->\nOld", user: { login: "acr[bot]" } },
   ];
   const octokit = { rest: {
     pulls: { get: async () => ({ data: livePr(req) }) },
@@ -570,7 +594,7 @@ test("walkthrough updates only its marked App-owned issue comment", async () => 
     },
   } };
   const req = effectRequest(octokit);
-  const provider = createGithubProvider(FULL_ENV, { appBotLogin: "pepeye[bot]" });
+  const provider = createGithubProvider(FULL_ENV, { appBotLogin: "acr[bot]" });
   await provider.upsertWalkthrough(req, "New walkthrough");
   assert.deepEqual(mutations.map((mutation) => mutation.action), ["update"]);
   assert.equal(mutations[0]?.input.comment_id, 2);
@@ -585,7 +609,7 @@ test("finding resolution replies only to an App-owned root comment on this PR", 
   const graphqlCalls: string[] = [];
   let resolved = false;
   let parent = {
-    user: { login: "pepeye[bot]" }, pull_request_review_id: 12,
+    user: { login: "acr[bot]" }, pull_request_review_id: 12,
     pull_request_url: "https://api.github.com/repos/quantipixels/skills/pulls/9",
   };
   const octokit = { graphql: async (query: string) => {
@@ -604,7 +628,7 @@ test("finding resolution replies only to an App-owned root comment on this PR", 
     createReplyForReviewComment: async (input: Record<string, unknown>) => { replies.push(input); },
   } } };
   const req = effectRequest(octokit);
-  const provider = createGithubProvider(FULL_ENV, { appBotLogin: "pepeye[bot]" });
+  const provider = createGithubProvider(FULL_ENV, { appBotLogin: "acr[bot]" });
   await provider.resolveFinding(req, "41", "Reassessed");
   assert.equal(replies[0]?.comment_id, 41);
   assert.equal(graphqlCalls.filter((query) => query.includes("mutation")).length, 1);

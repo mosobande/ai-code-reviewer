@@ -288,6 +288,17 @@ export function createGithubProvider(
         requested = (pr?.requested_reviewers ?? []).find(
           ({ login }: { login?: string }) => reviewerLogins.has(String(login ?? "").toLowerCase()),
         )?.login;
+        if (!requested && Number.isSafeInteger(installationId)) {
+          const login = await botLogin();
+          const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
+            owner, repo, pull_number: pr.number, per_page: 100,
+          });
+          if (reviews.some((review: any) =>
+            review?.state?.toUpperCase() === "APPROVED"
+              && review?.user?.login?.toLowerCase() === login)) {
+            requested = reviewerLogins.values().next().value;
+          }
+        }
       }
       if (!requested || !reviewerLogins.has(requested.toLowerCase())) return null;
       const id = automatic
