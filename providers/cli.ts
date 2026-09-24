@@ -7,6 +7,7 @@ export type CliProviderConfig = {
   command: string;
   envAllowlist: readonly string[];
   sourceEnv?: NodeJS.ProcessEnv;
+  extraEnv?(opts: ReviewRunOpts): NodeJS.ProcessEnv;
   validateConfig?(env: NodeJS.ProcessEnv): void;
   buildArgs(opts: ReviewRunOpts): string[];
   /**
@@ -32,7 +33,11 @@ export function createCliBackedProvider(config: CliProviderConfig): ReviewProvid
     },
 
     async run(prompt: string, opts: ReviewRunOpts = {}): Promise<ReviewResult> {
-      const env = buildSubprocessEnv(config.sourceEnv ?? process.env, config.envAllowlist);
+      const env = buildSubprocessEnv(
+        config.sourceEnv ?? process.env,
+        config.envAllowlist,
+        config.extraEnv?.(opts),
+      );
       const stdout = await spawnText(config.command, config.buildArgs(opts), env, prompt, {
         signal: opts.signal,
       });

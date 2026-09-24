@@ -28,14 +28,27 @@ export const CLAUDE_ENV_ALLOWLIST = [...BASE_ENV_ALLOWLIST, "CLAUDE_CODE_OAUTH_T
 
 export function createClaudeCliConfig(env: NodeJS.ProcessEnv): CliProviderConfig {
   const model = env.CLAUDE_MODEL?.trim() || DEFAULT_MODEL;
+  const gatewayMode = Boolean(env.MODEL_GATEWAY_SOCKET_PATH?.trim());
 
   return {
     name: "claude",
     command: "claude",
-    envAllowlist: CLAUDE_ENV_ALLOWLIST,
+    envAllowlist: gatewayMode ? BASE_ENV_ALLOWLIST : CLAUDE_ENV_ALLOWLIST,
     sourceEnv: env,
+    extraEnv(opts): NodeJS.ProcessEnv {
+      if (!gatewayMode) return {};
+      if (!opts.gateway) throw new Error("Claude gateway review requires an attempt grant");
+      return {
+        ANTHROPIC_BASE_URL: opts.gateway.baseUrl,
+        ANTHROPIC_AUTH_TOKEN: opts.gateway.token,
+      };
+    },
 
     validateConfig(e: NodeJS.ProcessEnv): void {
+      if (e.MODEL_GATEWAY_SOCKET_PATH?.trim() && (e.CLAUDE_CODE_OAUTH_TOKEN?.trim() || e.ANTHROPIC_API_KEY?.trim())) {
+        throw new Error("Gateway review service must not receive reusable Claude credentials");
+      }
+      if (e.MODEL_GATEWAY_SOCKET_PATH?.trim()) return;
       // Auth must flow through CLAUDE_CODE_OAUTH_TOKEN (the subscription). A stray
       // ANTHROPIC_API_KEY would take precedence and silently move usage onto metered
       // API billing, so refuse to start rather than bill the wrong way.

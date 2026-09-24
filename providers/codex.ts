@@ -10,7 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseReviewJson, type ReviewResult } from "../review.ts";
-import type { ReviewProvider, ReviewRunOpts } from "../provider.ts";
+import type { ReviewProvider, ReviewRunOpts, ReviewGatewayGrant } from "../provider.ts";
 import { BASE_ENV_ALLOWLIST, buildSubprocessEnv } from "../runtime/spawn.ts";
 import schema from "./review.schema.json" with { type: "json" };
 
@@ -47,7 +47,22 @@ function codexEnvAllowlist(env: NodeJS.ProcessEnv): readonly string[] {
     : CODEX_ENV_ALLOWLIST;
 }
 
-function codexClientOptions(env: NodeJS.ProcessEnv): CodexOptions {
+function codexClientOptions(
+  env: NodeJS.ProcessEnv,
+  gateway?: ReviewGatewayGrant,
+  isolatedHome?: string,
+): CodexOptions {
+  if (gateway) {
+    if (!isolatedHome) throw new Error("Codex gateway review requires an isolated home");
+    return {
+      env: buildSubprocessEnv(env, BASE_ENV_ALLOWLIST, {
+        CODEX_HOME: isolatedHome,
+        CODEX_SQLITE_HOME: isolatedHome,
+      }),
+      apiKey: gateway.token,
+      baseUrl: gateway.baseUrl,
+    };
+  }
   const subprocessEnv = buildSubprocessEnv(env, codexEnvAllowlist(env));
   const apiKey = env.CODEX_API_KEY?.trim();
   const baseUrl = env.CODEX_BASE_URL?.trim();
@@ -100,6 +115,15 @@ export function createCodexProvider(env: NodeJS.ProcessEnv, deps: CodexProviderD
     name: "codex",
 
     validateConfig(e: NodeJS.ProcessEnv): void {
+      if (e.MODEL_GATEWAY_SOCKET_PATH?.trim()) {
+        if (["CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_HOME", "CODEX_SQLITE_HOME", "CODEX_BASE_URL"]
+          .some((name) => e[name]?.trim())) {
+          throw new Error("Gateway review service must not receive reusable Codex credentials or a direct base URL");
+        }
+        optionalReasoningEffort(e.CODEX_REASONING_EFFORT);
+        optionalWebSearchMode(e.CODEX_WEB_SEARCH_MODE);
+        return;
+      }
       const hasExplicitAuth = Boolean(e.CODEX_API_KEY?.trim() || e.CODEX_ACCESS_TOKEN?.trim());
       const hasConfiguredHome = Boolean(e.CODEX_HOME?.trim());
       if (e.CODEX_PROFILE?.trim()) {
@@ -119,9 +143,12 @@ export function createCodexProvider(env: NodeJS.ProcessEnv, deps: CodexProviderD
     },
 
     async run(prompt: string, opts: ReviewRunOpts = {}): Promise<ReviewResult> {
+      const gatewayMode = Boolean(env.MODEL_GATEWAY_SOCKET_PATH?.trim());
+      if (gatewayMode && !opts.gateway) throw new Error("Codex gateway review requires an attempt grant");
       const diffOnlyDir = opts.addDir ? undefined : await mkdtemp(join(tmpdir(), "codex-diff-review-"));
-      const client = createClient(codexClientOptions(env));
+      const isolatedHome = opts.gateway ? await mkdtemp(join(tmpdir(), "acr-codex-home-")) : undefined;
       try {
+        const client = createClient(codexClientOptions(env, opts.gateway, isolatedHome));
         const thread = client.startThread(threadOptions(env, opts, diffOnlyDir));
         const turn = await thread.run(prompt, {
           outputSchema: schema,
@@ -130,6 +157,7 @@ export function createCodexProvider(env: NodeJS.ProcessEnv, deps: CodexProviderD
         return parseReviewJson(turn.finalResponse);
       } finally {
         if (diffOnlyDir) await rm(diffOnlyDir, { recursive: true, force: true }).catch(() => {});
+        if (isolatedHome) await rm(isolatedHome, { recursive: true, force: true }).catch(() => {});
       }
     },
   };

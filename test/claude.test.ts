@@ -77,6 +77,24 @@ test("the claude subprocess env carries the OAuth token but never the service se
   }
 });
 
+test("Claude gateway mode passes only the attempt grant to its subprocess", () => {
+  const source = {
+    PATH: "/usr/bin", MODEL_GATEWAY_SOCKET_PATH: "/tmp/acr.sock",
+    CLAUDE_CODE_OAUTH_TOKEN: "reusable-token", GITHUB_WEBHOOK_SECRET: "secret",
+  };
+  const config = createClaudeCliConfig(source);
+  assert.throws(() => config.validateConfig?.(source), /must not receive reusable Claude credentials/);
+  const attempt = { gateway: {
+    token: "opaque-attempt-token", baseUrl: "http://127.0.0.1:8080/attempts/a/anthropic",
+  } };
+  const subprocessEnv = buildSubprocessEnv(source, config.envAllowlist, config.extraEnv?.(attempt));
+  assert.equal(subprocessEnv.ANTHROPIC_AUTH_TOKEN, attempt.gateway.token);
+  assert.equal(subprocessEnv.ANTHROPIC_BASE_URL, attempt.gateway.baseUrl);
+  assert.equal(subprocessEnv.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+  assert.equal(subprocessEnv.GITHUB_WEBHOOK_SECRET, undefined);
+  assert.throws(() => config.extraEnv?.({}), /requires an attempt grant/);
+});
+
 test("selectProvider returns the Claude provider for 'claude' and by default", () => {
   assert.equal(selectProvider("claude").name, "claude");
   assert.equal(selectProvider(undefined).name, "claude");

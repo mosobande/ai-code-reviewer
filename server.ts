@@ -43,6 +43,8 @@ import {
 } from "./provider.ts";
 import { removeWorkdir } from "./clone.ts";
 import { renderInertModelText } from "./model-text.ts";
+import { ModelGatewayClient } from "./runtime/model-gateway-client.ts";
+import { modelCredentialProfile } from "./runtime/model-provider-credentials.ts";
 import {
   REVIEW_POLICY_FILE,
   parseInstanceReviewPolicy,
@@ -363,6 +365,15 @@ server.post(
 );
 
 async function main(): Promise<void> {
+  const gatewaySocket = process.env.MODEL_GATEWAY_SOCKET_PATH?.trim();
+  if (gatewaySocket) {
+    const capabilities = await new ModelGatewayClient(gatewaySocket).capabilities();
+    const provider = aiProvider.name === "claude" ? "anthropic" : "openai";
+    const profile = modelCredentialProfile(provider, process.env);
+    if (!capabilities.providers.includes(provider) || capabilities.profiles[provider] !== profile) {
+      throw new Error(`model gateway does not offer ${provider} profile ${profile}`);
+    }
+  }
   await repoProvider.init();
   server.listen(Number(PORT), () =>
     console.log(

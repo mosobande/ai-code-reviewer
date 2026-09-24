@@ -1,6 +1,11 @@
 import type { ReviewResult } from "./review.ts";
 import { createClaudeProvider } from "./providers/claude.ts";
 import { createCodexProvider } from "./providers/codex.ts";
+import { randomUUID } from "node:crypto";
+import { ModelGatewayClient, ModelGatewayRateLimitError } from "./runtime/model-gateway-client.ts";
+import { modelCredentialProfile } from "./runtime/model-provider-credentials.ts";
+
+export type ReviewGatewayGrant = { token: string; baseUrl: string };
 
 export type ReviewRunOpts = {
   maxTurns?: number;
@@ -8,6 +13,7 @@ export type ReviewRunOpts = {
   deep?: boolean;
   /** Caller cancellation on input; the shared runner replaces it with a per-attempt signal. */
   signal?: AbortSignal;
+  gateway?: ReviewGatewayGrant;
 };
 
 export interface ReviewProvider {
@@ -29,6 +35,13 @@ export class ReviewTimeoutError extends Error {
   }
 }
 
+class GatewayContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GatewayContractError";
+  }
+}
+
 export type AttemptSignal = {
   signal: AbortSignal;
   dispose(): void;
@@ -43,6 +56,7 @@ export type ReviewExecutionRuntime = {
     totalBudgetMs: number,
     callerSignal?: AbortSignal,
   ) => AttemptSignal;
+  gatewayClient?: Pick<ModelGatewayClient, "grant" | "revoke">;
 };
 
 function timeoutEnvName(providerName: string): string {
@@ -121,7 +135,9 @@ function abortReason(signal: AbortSignal): Error {
 }
 
 function isNonRetryable(err: unknown): boolean {
-  return err instanceof ReviewTimeoutError || (err instanceof Error && err.name === "AbortError");
+  return err instanceof ReviewTimeoutError || err instanceof GatewayContractError
+    || err instanceof ModelGatewayRateLimitError
+    || (err instanceof Error && err.name === "AbortError");
 }
 
 /** Validate both adapter configuration and the selected provider's deadline policy. */
@@ -142,6 +158,16 @@ export async function runReview(
   const totalBudgetMs = effectiveReviewTimeoutMs(provider.name, env);
   const startedAt = now();
   const callerSignal = opts.signal;
+  if (opts.gateway) throw new Error("gateway grants are owned by the review runner");
+  const socketPath = env.MODEL_GATEWAY_SOCKET_PATH?.trim();
+  const gateway = socketPath
+    ? runtime.gatewayClient ?? new ModelGatewayClient(socketPath)
+    : undefined;
+  const gatewayProvider = provider.name === "claude" ? "anthropic"
+    : provider.name === "codex" ? "openai" : undefined;
+  if (gateway && !gatewayProvider) {
+    throw new Error(`model gateway does not support reviewer ${provider.name}`);
+  }
 
   if (callerSignal?.aborted) throw abortReason(callerSignal);
 
@@ -157,9 +183,25 @@ export async function runReview(
       totalBudgetMs,
       callerSignal,
     );
+    const attemptId = gateway ? randomUUID() : undefined;
     try {
       console.log(`[${provider.name}] review attempt ${attempt}/2; ${Math.ceil(remainingMs / 1000)}s remaining`);
-      const result = await provider.run(prompt, { ...opts, signal: attemptSignal.signal });
+      const profile = gatewayProvider && gateway
+        ? modelCredentialProfile(gatewayProvider, env) : undefined;
+      const grant = gateway && gatewayProvider && attemptId && profile
+          ? await gateway.grant({
+            version: 1, attemptId, provider: gatewayProvider,
+            credentialProfile: profile,
+            deadlineAt: new Date(Date.now() + remainingMs).toISOString(),
+          }, attemptSignal.signal)
+        : undefined;
+      if (grant && (grant.provider !== gatewayProvider || grant.credentialProfile !== profile)) {
+        throw new GatewayContractError("model gateway returned a grant for a different provider or profile");
+      }
+      const result = await provider.run(prompt, {
+        ...opts, signal: attemptSignal.signal,
+        ...(grant ? { gateway: { token: grant.token, baseUrl: grant.baseUrl } } : {}),
+      });
       if (attemptSignal.signal.aborted) throw abortReason(attemptSignal.signal);
       return result;
     } catch (err) {
@@ -174,7 +216,11 @@ export async function runReview(
         err instanceof Error ? err.message : err,
       );
     } finally {
-      attemptSignal.dispose();
+      try {
+        if (gateway && attemptId) await gateway.revoke(attemptId);
+      } finally {
+        attemptSignal.dispose();
+      }
     }
   }
 

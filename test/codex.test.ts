@@ -66,6 +66,19 @@ test("codex SDK options support API base URL without exposing runtime path overr
   assert.equal(options.codexPathOverride, undefined);
 });
 
+test("Codex gateway options isolate runtime home and exclude reusable credentials", () => {
+  const grant = { token: "opaque-attempt-token", baseUrl: "http://127.0.0.1:8080/attempts/a/openai/v1" };
+  const options = __test.codexClientOptions({
+    PATH: "/usr/bin", HOME: "/home/app", CODEX_ACCESS_TOKEN: "reusable-token",
+    CODEX_API_KEY: "direct-key", CODEX_HOME: "/home/app/.codex",
+  }, grant, "/tmp/acr-isolated-home");
+  assert.equal(options.apiKey, grant.token);
+  assert.equal(options.baseUrl, grant.baseUrl);
+  assert.equal(options.env?.CODEX_HOME, "/tmp/acr-isolated-home");
+  assert.equal(options.env?.CODEX_ACCESS_TOKEN, undefined);
+  assert.equal(options.env?.CODEX_API_KEY, undefined);
+});
+
 test("codex thread options use read-only sandbox, approval never, model, and deep-review directory", () => {
   const options = __test.threadOptions(
     { CODEX_MODEL: "gpt-5.5", CODEX_REASONING_EFFORT: "high", CODEX_WEB_SEARCH_MODE: "disabled" },
