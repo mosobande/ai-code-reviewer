@@ -144,6 +144,11 @@ test("codex provider runs through SDK with output schema and parses finalRespons
   assert.equal(capturedThreadOptions?.additionalDirectories, undefined);
   assert.equal(capturedTurnOptions?.signal, signal);
   assert.deepEqual(capturedTurnOptions?.outputSchema, schema);
+  assert.deepEqual(
+    [...schema.properties.comments.items.required].sort(),
+    Object.keys(schema.properties.comments.items.properties).sort(),
+    "Codex strict output requires every finding property",
+  );
 });
 
 test("codex provider isolates diff-only reviews in a temporary directory and removes it", async () => {

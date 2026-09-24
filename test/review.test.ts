@@ -181,6 +181,22 @@ test("parseReviewJson rejects malformed review contracts", () => {
   );
 });
 
+test("review findings reject invalid source locations and undeclared fields", () => {
+  const valid = { path: "src/a.ts", line: 1, body: "A real defect", severity: "blocker" };
+  for (const invalid of [
+    { ...valid, line: 0 },
+    { ...valid, line: -1 },
+    { ...valid, line: Number.MAX_SAFE_INTEGER + 1 },
+    { ...valid, path: "" },
+    { ...valid, command: "write to provider" },
+    { ...valid, severity: "pass" },
+  ]) {
+    assert.throws(() => parseReviewJson(JSON.stringify({ summary: "result", comments: [invalid] })), /comments must include/);
+  }
+  assert.throws(() => parseReviewJson('{"summary":"s","comments":[],"command":"write"}'), /unknown field/);
+  assert.throws(() => parsePositiveInt(String(Number.MAX_SAFE_INTEGER + 1), "REVIEW_MAX_TURNS"), /positive integer/);
+});
+
 test("spawnText does not impose an application output-size limit", async () => {
   const stdoutBytes = 4 * 1024 * 1024 + 1;
   const stderrBytes = 1024 * 1024 + 1;

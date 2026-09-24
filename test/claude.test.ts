@@ -15,11 +15,12 @@ import schema from "../providers/review.schema.json" with { type: "json" };
 test("claude CLI adapter defaults to a single diff-only pass on the default model", () => {
   const args = createClaudeCliConfig({}).buildArgs({});
   assert.deepEqual(args, [
-    "-p", "--output-format", "json", "--json-schema", JSON.stringify(schema),
-    "--max-turns", "1", "--model", "claude-sonnet-4-6",
+    "-p", "--safe-mode", "--no-session-persistence", "--output-format", "json",
+    "--json-schema", JSON.stringify(schema), "--max-turns", "1",
+    "--model", "claude-sonnet-4-6", "--tools", "",
   ]);
   assert.ok(!args.includes("--add-dir"), "no working dir by default");
-  assert.ok(!args.includes("--allowedTools"), "no tool restriction by default");
+  assert.equal(args[args.indexOf("--tools") + 1], "", "diff-only review has no tools");
 });
 
 test("claude CLI adapter enforces the shared review schema as structured output", () => {
@@ -37,7 +38,7 @@ test("claude CLI adapter wires a deep review (dir + read-only tools, turn budget
   const args = createClaudeCliConfig({}).buildArgs({ maxTurns: 8, addDir: "/tmp/clone", deep: true });
   assert.equal(args[args.indexOf("--max-turns") + 1], "8");
   assert.equal(args[args.indexOf("--add-dir") + 1], "/tmp/clone");
-  assert.equal(args[args.indexOf("--allowedTools") + 1], "Read,Grep,Glob");
+  assert.equal(args[args.indexOf("--tools") + 1], "Read,Grep,Glob");
   // Read-only: nothing that could execute or mutate the checked-out PR code.
   assert.ok(!args.join(" ").match(/Bash|Write|Edit/), "deep review tools stay read-only");
 });

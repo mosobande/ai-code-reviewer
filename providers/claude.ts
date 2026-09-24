@@ -50,6 +50,8 @@ export function createClaudeCliConfig(env: NodeJS.ProcessEnv): CliProviderConfig
     buildArgs(opts: ReviewRunOpts): string[] {
       const args = [
         "-p",
+        "--safe-mode",
+        "--no-session-persistence",
         "--output-format", "json",
         // Enforce the review contract at the CLI layer: the model delivers its reply
         // through a schema-validated tool call instead of free text, so unescaped
@@ -59,7 +61,7 @@ export function createClaudeCliConfig(env: NodeJS.ProcessEnv): CliProviderConfig
         "--model", model,
       ];
       if (opts.addDir) args.push("--add-dir", opts.addDir);
-      if (opts.deep) args.push("--allowedTools", READ_ONLY_TOOLS.join(","));
+      args.push("--tools", opts.deep ? READ_ONLY_TOOLS.join(",") : "");
       return args;
     },
 
