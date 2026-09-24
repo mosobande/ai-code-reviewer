@@ -11,11 +11,14 @@
  * process list (`ps`). The working dir is always removed by the caller.
  */
 
-import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildSubprocessEnv, GIT_ENV_ALLOWLIST } from "./runtime/spawn.ts";
+import {
+  buildSubprocessEnv,
+  GIT_ENV_ALLOWLIST,
+  spawnText,
+} from "./runtime/spawn.ts";
 
 /**
  * Build an HTTP `AUTHORIZATION: basic …` header from a username + token. GitHub uses
@@ -29,25 +32,20 @@ export function basicAuthHeader(user: string, token: string): string {
   return `AUTHORIZATION: basic ${basic}`;
 }
 
-/** Run one git command; reject with trimmed stderr on a non-zero exit. */
-function git(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { env, stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.on("error", reject);
-    child.on("close", (code) =>
-      code === 0
-        ? resolve()
-        : reject(new Error(`git ${args[0]} failed (exit ${code}): ${stderr.trim().slice(0, 500)}`)),
-    );
-  });
+/** Run one cancellable git command without exposing its auth-only environment. */
+async function git(
+  args: string[],
+  env: Record<string, string>,
+  signal?: AbortSignal
+): Promise<string> {
+  return spawnText("git", args, env, "", { signal });
 }
 
 export type CloneSpec = {
-  cloneUrl: string;    // e.g. https://github.com/owner/repo.git
-  fetchRef: string;    // e.g. pull/42/head | merge-requests/42/head
-  authHeader: string;  // an AUTHORIZATION header value (see basicAuthHeader)
+  cloneUrl: string; // e.g. https://github.com/owner/repo.git
+  fetchRef: string; // e.g. pull/42/head | merge-requests/42/head
+  authHeader: string; // an AUTHORIZATION header value (see basicAuthHeader)
+  expectedHeadSha: string; // admitted source SHA; reject a ref that moved during fetch
 };
 
 /**
@@ -57,21 +55,49 @@ export type CloneSpec = {
  * changes, so we never need to clone the fork. On any failure the partial dir is
  * cleaned up before re-throwing.
  */
-export async function cloneRef(spec: CloneSpec): Promise<string> {
+export async function cloneRef(
+  spec: CloneSpec,
+  signal?: AbortSignal
+): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pr-review-"));
   // Minimal env: base infra vars only (no service secrets — the token is injected via
   // GIT_CONFIG_* below, never inherited from the parent environment).
   const env = buildSubprocessEnv(process.env, GIT_ENV_ALLOWLIST, {
-    GIT_TERMINAL_PROMPT: "0",         // never block on an interactive credential prompt
+    GIT_TERMINAL_PROMPT: "0", // never block on an interactive credential prompt
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_LFS_SKIP_SMUDGE: "1",
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "http.extraHeader",
     GIT_CONFIG_VALUE_0: spec.authHeader,
   });
   try {
-    await git(["init", "-q", dir], env);
-    await git(["-C", dir, "remote", "add", "origin", spec.cloneUrl], env);
-    await git(["-C", dir, "fetch", "--depth", "1", "--no-tags", "origin", spec.fetchRef], env);
-    await git(["-C", dir, "checkout", "-q", "FETCH_HEAD"], env);
+    await git(["init", "-q", dir], env, signal);
+    await git(
+      ["-C", dir, "remote", "add", "origin", spec.cloneUrl],
+      env,
+      signal
+    );
+    await git(
+      [
+        "-C",
+        dir,
+        "fetch",
+        "--depth",
+        "1",
+        "--no-tags",
+        "origin",
+        spec.fetchRef,
+      ],
+      env,
+      signal
+    );
+    await git(["-C", dir, "-c", "core.hooksPath=/dev/null", "checkout", "-q", "FETCH_HEAD"], env, signal);
+    const checkedOut = (await git(["-C", dir, "rev-parse", "HEAD"], env, signal)).trim();
+    if (checkedOut.toLowerCase() !== spec.expectedHeadSha.toLowerCase()) {
+      throw new Error("fetched review head differs from the admitted source SHA");
+    }
     return dir;
   } catch (err) {
     await removeWorkdir(dir);
