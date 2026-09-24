@@ -5,8 +5,8 @@ A self-hosted webhook service that reviews pull/merge requests with an AI provid
 reviewer is requested on a change, the service pulls the diff, runs the review on
 your subscription, and posts inline review comments.
 
-Unlike a CI workflow, there is **no per-repo config file**. The service listens to
-webhooks for every repo it's installed on.
+The service listens to webhooks for explicitly allowed repositories. A repository
+can set review approval policy in `.acr.yml` on its target branch.
 
 **Two pluggable seams.** The **AI provider** (the review engine) and the
 **repository provider** (the code host) are both swappable:
@@ -22,17 +22,17 @@ webhooks for every repo it's installed on.
 ## How it works
 
 ```
-PR/MR: "Request review from <the bot>"
-        │  (GitHub pull_request.review_requested / GitLab MR reviewer|assignee added)
+PR/MR: request review, push while assigned, or use a review command
+        │  (GitHub can opt exact repositories into automatic review)
         ▼
-  This service  ──►  ack immediately; dedupe this head SHA (SQLite); enqueue
+  This service  ──►  verify live head and target; durably admit; ack; enqueue
         │
         ├──►  fetch the diff (repository provider)
         │
         ├──►  selected AI provider (Claude CLI by default, Codex SDK optional)
         │            returns JSON: { summary, comments[] }
         ▼
-  POST a single review with inline comments; record the outcome
+  POST a review with inline comments; reconcile check and approval
 ```
 
 ## What the review covers
@@ -44,8 +44,20 @@ performance, API/contract changes, missing tests, and maintainability — and
 deliberately skips pure formatting a linter already enforces. The PR title and
 description are fed in (as untrusted data) so it can judge whether the change does
 what it claims. Findings are graded `blocker` / `warn` / `info`, and the summary
-leads with what matters. For deeper, context-aware comments, see
-[Deep reviews](#deep-reviews-optional).
+leads with what matters. A read-only checkout provides surrounding context by
+default. See [Deep reviews](#deep-reviews).
+
+### Follow-up reviews
+
+Requesting the reviewer again runs a full review. A push while the reviewer
+remains assigned asks for an incremental review of the uncovered commits; if
+the host cannot prove a complete range, the service runs a full review. A PR/MR
+author or collaborator can leave an exact top-level `@reviewer review` command
+for an incremental pass or `@reviewer full review` for a full pass. Here
+`reviewer` is a configured GitHub reviewer login or the GitLab bot username.
+Replying to a finding asks the bot to reassess that conversation. Incremental
+and targeted passes leave the required review check non-passing until a full
+review completes.
 
 ## 1. Set up the repository provider
 
@@ -60,9 +72,11 @@ Settings → Developer settings → **GitHub Apps** → New GitHub App.
 - **Webhook secret:** a long random string (also goes in `.env`)
 - **Repository permissions:**
   - Pull requests: **Read & write** (read the diff, post the review)
-  - Contents: **Read-only** (lets you later check out files for deeper review)
+  - Contents: **Read-only** (read `.acr.yml` and check out files)
+  - Checks: **Read & write** (publish the exact-head review check)
+  - Issues: **Read & write** (read commands and maintain the walkthrough)
   - Metadata: **Read-only** (mandatory)
-- **Subscribe to events:** **Pull request**
+- **Subscribe to events:** **Pull request**, **Issue comment**, and **Pull request review comment**
 - After creating: note the **App ID**, generate a **private key** (.pem), then
   **Install** the App on your account and choose **All repositories**.
 
@@ -70,8 +84,9 @@ Settings → Developer settings → **GitHub Apps** → New GitHub App.
 > (not public/installable by others). The trigger is just a reviewer login, which
 > is public knowledge once this repo is open-source. If anyone could install the
 > App, they could open PRs requesting your reviewer login and loop them to drain
-> your Claude subscription. A private App is the primary defense; the service does
-> not yet enforce an installation/owner allowlist.
+> your Claude subscription. Configure `GITHUB_ALLOWED_OWNERS` or
+> `GITHUB_ALLOWED_REPOSITORIES`; automatic review additionally requires exact
+> `GITHUB_AUTO_REVIEW_REPOSITORIES` entries.
 
 ### GitLab (`REPO_PROVIDER=gitlab`)
 
@@ -82,19 +97,24 @@ GitLab has no first-party App model; the bot is a user backed by an access token
    `project_<id>_bot`) is what you add as a reviewer. Put the token in `GITLAB_TOKEN`.
    The bot's identity is resolved from the token at startup (`GET /user`), so there's
    no `REVIEWER_LOGIN` on GitLab.
-2. Add a **webhook** (Settings → Webhooks) → URL `https://YOUR_HOST/api/gitlab/webhooks`,
-   **Secret token** = `GITLAB_WEBHOOK_SECRET` (a long random string), and tick
-   **Merge request events**.
-3. For **self-managed** GitLab, set `GITLAB_API_URL` to your instance
+2. On GitLab 19.1 or later, add a **webhook** (Settings → Webhooks) → URL
+   `https://YOUR_HOST/api/gitlab/webhooks`. Generate a **signing token** and put
+   its `whsec_` value in `GITLAB_WEBHOOK_SECRET`. Tick **Merge request events**
+   and **Comment events**.
+3. Add an external status check for each allowed project. Put its ID in
+   `GITLAB_EXTERNAL_STATUS_CHECK_IDS_JSON`, keyed by exact project path. Set
+   `REPOSITORY_ALLOWED_REPOSITORIES` to those same paths.
+4. For **self-managed** GitLab, set `GITLAB_API_URL` to your instance
    (e.g. `https://gitlab.example.com`); it defaults to `https://gitlab.com`.
 
 **Trigger:** add the bot as a **reviewer** (GitLab Premium) **or assignee** (works on
-Free tier) on a merge request. Re-requesting a review fires it again on a new commit.
+Free tier) on a merge request. Re-requesting a review or pushing while assigned
+also starts a review.
 
 > **Security — keep the bot scoped.** The token grants whatever its project/group
 > allows; prefer a Project access token over a Personal one, and scope it to the
-> repos you actually review. As with GitHub, the trigger (a reviewer) is public, so
-> don't expose the bot on projects where strangers can open MRs against it.
+> repos you actually review. `REPOSITORY_ALLOWED_REPOSITORIES` further limits
+> which projects the service accepts.
 
 ## 2. Set up the AI provider
 
@@ -178,24 +198,28 @@ cloudflared) as the Webhook URL.
 
 ## Reliability
 
-These are implemented, not aspirational:
+The review path provides:
 
-- **Fast ack + background queue:** hosts fail a webhook they can't answer within
-  ~10s and retry it. The service acks the delivery immediately and runs the
+- **Durable admission + background queue:** the service verifies the live source
+  and target, records the request in SQLite, then acknowledges it and runs the
   review in the background, serialised through a one-at-a-time queue so only a
   single AI provider subprocess runs at once (predictable memory on a small box).
-- **Idempotency & audit log:** every requested review is recorded in a SQLite
-  store keyed by the change's head SHA, so webhook retries — and process restarts —
-  never produce duplicate reviews. On GitLab this also absorbs the noise of the
-  generic MR-update event firing more than once. The same table doubles as an audit
-  log (status, summary, error, timestamps). A failed review stays retryable:
-  re-request the review to try the same commit again. Set `DATABASE_PATH` (defaults
+- **Generations & audit log:** webhook delivery IDs deduplicate retries while a
+  new command or newer head can create another review generation. A newer head
+  cancels queued or running older work. Each generation records status, coverage,
+  summary, error, and timestamps. A failure before posting can be retried by a
+  new request. Set `DATABASE_PATH` (defaults
   to `./data/reviews.db`); in a container, point it at a mounted volume so it
   survives redeploys — already wired in `config/deploy.yml`.
 - **Bad inline comments degrade gracefully:** if the model comments on a line
   outside the diff, GitHub rejects the whole review and the code falls back to a
   summary-only comment; GitLab posts each comment separately, so a rejected one is
-  skipped and the rest (plus the summary) still land.
+  skipped and the rest (plus the summary) still land. Missing comments prevent
+  terminal success.
+- **Exact-head checks and policy:** GitHub Check Runs or GitLab external status
+  checks track the review. The target branch `.acr.yml` can select `human` or `bot`
+  approval; invalid or unreadable policy fails the review. See
+  [repository review policy](docs/review-policy.md).
 
 ## Limits
 
@@ -205,8 +229,7 @@ These are implemented, not aspirational:
   bot **is** a user, so you add it as a reviewer/assignee directly; its identity
   comes from `GITLAB_TOKEN`. Either way the service posts under its own identity.
 - **Usage:** headless reviews draw from your subscription's normal usage limits.
-  `--max-turns 1` (already set) keeps each review to a single pass. Watch your
-  quota if many PRs come through.
+  Contextual reviews default to an eight-turn budget; diff-only reviews use one.
 - **Single instance:** the in-process queue and the local SQLite file both assume
   exactly one running instance. Don't scale to multiple replicas without moving
   the queue and store onto shared infrastructure.
@@ -214,20 +237,20 @@ These are implemented, not aspirational:
   but the backlog is unbounded and lives in memory. A burst of requests grows
   memory and latency with no backpressure, and a restart drops everything still
   queued — those rows are recovered to `failed` at boot, so each dropped PR must
-  be re-requested. Fine for personal / small-org use; for heavier load, add a
+  be re-requested. A crash after posting starts leaves an ambiguous generation
+  for manual inspection before retry. Fine for personal / small-org use; for heavier load, add a
   bounded queue that posts a "busy, please re-request" notice rather than raising
   concurrency (which trades away the predictable-memory guarantee).
 
-## Deep reviews (optional)
+## Deep reviews
 
-By default a review sees only the unified diff. A deep review instead clones the
-change head and lets the AI provider open **surrounding files** (definitions, call sites,
-tests) for richer, context-aware comments.
+By default a review clones the change head and lets the AI provider open
+**surrounding files** (definitions, call sites, tests) for context. Set
+`DEEP_REVIEW=false` for diff-only reviews.
 
-- **Per change:** add the `deep-review` label to a PR/MR. The next time the bot is
-  requested (or re-requested) as reviewer, that change gets a deep review.
-- **Globally:** set `DEEP_REVIEW=true` to make every review deep. The label still
-  works; it just opts individual changes in when the global default is off.
+- **Per change:** add the `deep-review` label to a PR/MR to use a checkout when
+  the global default is off.
+- **Globally:** `DEEP_REVIEW=true` makes every review contextual.
 
 - **How it works:** the repository provider fetches the change head into a throwaway
   temp dir — shallow, fork-agnostic (`pull/<n>/head` on GitHub via a short-lived
@@ -241,7 +264,7 @@ tests) for richer, context-aware comments.
   passed via `GIT_CONFIG_*` env, so it never lands in `.git/config` or the process
   list. The worst case from a malicious change is a wrong comment, not RCE.
 - **Cost:** every deep review clones a repo and uses multiple turns, drawing more
-  from your subscription than a diff-only pass. Leave it off unless you want it.
+  from your subscription than a diff-only pass.
 - **Requirements:** `git` on the host (bundled in the image) and read access to repo
   contents — GitHub App **Contents: Read** / GitLab token **`read_repository`**
   (already in the setup above).

@@ -4,7 +4,7 @@ The instance approval mode defaults to `human`. Set `ACR_APPROVAL_MODE=bot` to
 allow the reviewer bot to grant approval after a passing review. The operator
 gates `ACR_REVIEW_ADMISSION_ENABLED` and
 `ACR_REVIEW_TERMINAL_SUCCESS_ENABLED` accept only `true` or `false` and default
-to `false`. Configure the provider's required check and approval rule before
+to `true`. Configure the provider's required check and approval rule before
 enabling bot approval.
 
 To override the mode for one repository, copy [`.acr.yml.example`](../.acr.yml.example)
