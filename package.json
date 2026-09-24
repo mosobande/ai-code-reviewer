@@ -15,7 +15,8 @@
     "express": "^4.19.2",
     "octokit": "^4.1.0",
     "p-queue": "^8.0.1",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
