@@ -174,6 +174,10 @@ Codex auth/config vars (`CODEX_HOME`, `CODEX_SQLITE_HOME`, `CODEX_ACCESS_TOKEN`,
 and Claude/Anthropic secrets are not forwarded. `CODEX_HOME` and
 `CODEX_SQLITE_HOME` remain Codex runtime details, not app-level configuration.
 
+For separate credential ownership, run the optional
+[review model gateway](docs/model-gateway.md). It issues short-lived attempt grants
+and handles provider rate limits without requiring the builder or job runtime.
+
 ## 3. Configure
 
 ```bash
