@@ -114,7 +114,8 @@ export class ModelGateway {
     if (
       (base.protocol !== "http:" && base.protocol !== "https:") ||
       base.username ||
-      base.password
+      base.password ||
+      base.href !== `${base.origin}/`
     ) {
       throw new Error("model gateway public base URL is invalid");
     }

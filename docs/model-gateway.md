@@ -33,7 +33,9 @@ path when the processes run as different users. The
 HTTP proxy defaults to `127.0.0.1:8080`. `MODEL_GATEWAY_HOST` and
 `MODEL_GATEWAY_PORT` set its listening address. `MODEL_GATEWAY_PUBLIC_BASE_URL`
 sets the address returned in grants, which the reviewer must be able to reach.
-Changing that public URL does **not** change the bind address.
+Use an `http` or `https` origin with no path, query, or fragment; the gateway
+serves attempt routes directly at its root. Changing that public URL does
+**not** change the bind address.
 
 Choose one credential mode for each provider the gateway serves:
 

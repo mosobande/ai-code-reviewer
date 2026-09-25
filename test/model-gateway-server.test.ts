@@ -32,6 +32,19 @@ function credentials() {
   };
 }
 
+test("gateway public base URL must point at the proxy root", () => {
+  for (const publicBaseUrl of [
+    "http://gateway/proxy", "http://gateway/?mode=test", "http://gateway/#fragment",
+    "http://gateway/?", "http://gateway/#",
+  ]) {
+    assert.throws(() => new ModelGateway({ credentials: credentials(), publicBaseUrl }),
+      /public base URL is invalid/);
+  }
+  assert.doesNotThrow(() => new ModelGateway({
+    credentials: credentials(), publicBaseUrl: "http://gateway/",
+  }));
+});
+
 test("gateway grants bind an opaque token to the exact profile, path, deadline, and attempt", async () => {
   let now = Date.parse("2026-08-25T09:00:00.000Z");
   let sequence = 0;

@@ -112,7 +112,7 @@ profile, which both processes must agree on:
 | `MODEL_GATEWAY_SOCKET_PATH` | `~/.acr/model-gateway.sock` | Absolute Unix control socket path. |
 | `MODEL_GATEWAY_HOST` | `127.0.0.1` | HTTP model proxy bind address. |
 | `MODEL_GATEWAY_PORT` | `8080` | HTTP model proxy port. |
-| `MODEL_GATEWAY_PUBLIC_BASE_URL` | `http://127.0.0.1:<port>` | Proxy URL returned to the reviewer in attempt grants. |
+| `MODEL_GATEWAY_PUBLIC_BASE_URL` | `http://127.0.0.1:<port>` | Proxy origin returned to the reviewer in attempt grants; no path, query, or fragment. |
 | `MODEL_GATEWAY_ANTHROPIC_AUTH_MODE` | none | `oauth` or `api-key` for Claude. |
 | `MODEL_GATEWAY_ANTHROPIC_PROFILE` | none | Stable name for the Claude gateway credential. |
 | `MODEL_GATEWAY_ANTHROPIC_OAUTH_TOKEN_FILE` | none | Private token file in Claude OAuth mode. |
