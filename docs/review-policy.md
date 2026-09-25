@@ -2,8 +2,8 @@
 
 The reviewer reports an exact-head check on each admitted pull or merge request.
 Its approval decision is separate: by default, a person still approves the change.
-Use `.acr.yml` when a repository needs a different approval mode from the service
-default. The file does not opt a repository into the service or grant it access;
+Use `.acr.yml` to choose approval, GitHub automatic review, and context depth
+per repository. The file does not opt a repository into the service or grant it access;
 the host allowlist and installation/token permissions still control that.
 
 ## Configure a repository
@@ -15,12 +15,19 @@ repository you want reviewed, then merge it into the **target branch**:
 version: 2
 review:
   approval: human
+  automatic: false
+  depth: contextual
 ```
 
 | `review.approval` | Effect after a clean full review |
 | --- | --- |
 | `human` | The check can pass, but the reviewer bot does not approve. Require a human approval in the host's branch or merge rules if you want one. |
 | `bot` | The check can pass and the reviewer bot grants its own approval. Configure the host's approval rule to count that bot if you want its approval to satisfy the rule. |
+
+| Key | Values | Effect |
+| --- | --- | --- |
+| `review.automatic` | `true`, `false` | On GitHub, `true` reviews eligible ready, human-authored PRs when opened, reopened, marked ready, or pushed, without a reviewer request. `false` is the default. Existing `GITHUB_AUTO_REVIEW_REPOSITORIES` entries still trigger automatic reviews independently. GitLab ignores this key because its webhook path uses reviewer or assignee requests. |
+| `review.depth` | `contextual`, `diff-only` | `contextual` checks out the source head read-only for surrounding file context; `diff-only` sends the patch without a checkout. Omit to use `DEEP_REVIEW` and the `deep-review` label. Targeted finding replies always use context. |
 
 `human` is the instance default. You can set `ACR_APPROVAL_MODE=bot` on the
 service to make `bot` the default instead. An absent `.acr.yml`, or a file with
@@ -37,6 +44,11 @@ to the instance default. Only `version: 2` and the `review` mapping are
 supported. `review.approval` accepts `human` or `bot`. Unknown or duplicate keys,
 aliases, anchors, invalid YAML, unsupported versions, and files over 16 KiB are
 rejected. Builder, job, and maintenance settings are outside this schema.
+This is the complete `.acr.yml` schema in the review-only service. The
+`temi` policy's other section was `builder`, which is intentionally excluded.
+`automatic` and `depth` are new review-only controls. Model choice, deadlines,
+credentials, and rollout gates are instance environment settings; see the
+[configuration reference](configuration-reference.md).
 
 ## Understand the check and approval
 
