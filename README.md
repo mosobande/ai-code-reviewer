@@ -8,6 +8,12 @@ your subscription, and posts inline review comments.
 The service listens to webhooks for explicitly allowed repositories. A repository
 can set review approval policy in `.acr.yml` on its target branch.
 
+**Start here:** [setup and deployment](docs/setup-and-deployment.md) walks from
+host permissions and credentials through a first review. Use
+[repository review policy](docs/review-policy.md) for `.acr.yml` and approval
+behavior, and [model gateway](docs/model-gateway.md) if model credentials should
+live in a separate process.
+
 **Two pluggable seams.** The **AI provider** (the review engine) and the
 **repository provider** (the code host) are both swappable:
 
@@ -78,7 +84,9 @@ Settings → Developer settings → **GitHub Apps** → New GitHub App.
   - Metadata: **Read-only** (mandatory)
 - **Subscribe to events:** **Pull request**, **Issue comment**, and **Pull request review comment**
 - After creating: note the **App ID**, generate a **private key** (.pem), then
-  **Install** the App on your account and choose **All repositories**.
+  **Install** the App on your account. Select the repositories you intend to
+  review; the service allowlist is an additional boundary, not a substitute for
+  installation scope.
 
 > **Security — keep the App private.** Set the App to **"Only on this account"**
 > (not public/installable by others). The trigger is just a reviewer login, which
@@ -92,11 +100,17 @@ Settings → Developer settings → **GitHub Apps** → New GitHub App.
 
 GitLab has no first-party App model; the bot is a user backed by an access token.
 
+GitLab review checks require [GitLab Ultimate](https://docs.gitlab.com/api/status_checks/)
+because this service publishes an external status check for each review. A
+GitLab Free project can assign a bot to an MR, but cannot use this review path
+without external status checks.
+
 1. Create a **Project** or **Group access token** (Settings → Access tokens) with
    scopes **`api`** and **`read_repository`**. Its associated bot user (e.g.
    `project_<id>_bot`) is what you add as a reviewer. Put the token in `GITLAB_TOKEN`.
    The bot's identity is resolved from the token at startup (`GET /user`), so there's
-   no `REVIEWER_LOGIN` on GitLab.
+   no `REVIEWER_LOGIN` on GitLab. Give that user permission to approve the MR
+   and update its [external status check](https://docs.gitlab.com/api/status_checks/).
 2. On GitLab 19.1 or later, add a **webhook** (Settings → Webhooks) → URL
    `https://YOUR_HOST/api/gitlab/webhooks`. Generate a **signing token** and put
    its `whsec_` value in `GITLAB_WEBHOOK_SECRET`. Tick **Merge request events**
@@ -107,8 +121,8 @@ GitLab has no first-party App model; the bot is a user backed by an access token
 4. For **self-managed** GitLab, set `GITLAB_API_URL` to your instance
    (e.g. `https://gitlab.example.com`); it defaults to `https://gitlab.com`.
 
-**Trigger:** add the bot as a **reviewer** (GitLab Premium) **or assignee** (works on
-Free tier) on a merge request. Re-requesting a review or pushing while assigned
+**Trigger:** add the bot as a **reviewer** or **assignee** on a merge request.
+Re-requesting a review or pushing while assigned
 also starts a review.
 
 > **Security — keep the bot scoped.** The token grants whatever its project/group
@@ -185,6 +199,17 @@ cp .env.example .env      # set REPO_PROVIDER + that host's block, and one AI pr
 npm install
 ```
 
+Keep the host allowlist narrow: `GITHUB_ALLOWED_OWNERS` admits every repository
+under a listed owner, while `GITHUB_ALLOWED_REPOSITORIES` admits only named
+`owner/repo` entries. At least one of those settings is required for GitHub.
+`GITHUB_AUTO_REVIEW_REPOSITORIES` opts exact allowed repositories into review on
+open, ready, and push without waiting for a reviewer request; leave it unset
+for request-only behavior. GitLab requires exact
+`REPOSITORY_ALLOWED_REPOSITORIES` paths and a matching external status check ID
+for each one. See [.env.example](.env.example) for the full setting list and
+[repository review policy](docs/review-policy.md) for `.acr.yml`, approval, and
+the rollout gates.
+
 ## 4. Host it
 
 The service needs Node 18+ and, for `AI_PROVIDER=claude`, the Claude Code CLI. For
@@ -222,7 +247,8 @@ The review path provides:
   terminal success.
 - **Exact-head checks and policy:** GitHub Check Runs or GitLab external status
   checks track the review. The target branch `.acr.yml` can select `human` or `bot`
-  approval; invalid or unreadable policy fails the review. See
+  approval; invalid or unreadable policy fails the review. A check can pass in
+  `human` mode without granting bot approval. See
   [repository review policy](docs/review-policy.md).
 
 ## Limits
