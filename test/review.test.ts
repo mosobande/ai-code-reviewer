@@ -71,6 +71,12 @@ test("both prompts embed the diff and the JSON output contract", () => {
   }
 });
 
+test("diff-only incremental prompt describes the uncovered range", () => {
+  const prompt = buildDiffPrompt("diff", {}, "merge request", "incremental");
+  assert.match(prompt, /uncovered commit range/);
+  assert.doesNotMatch(prompt, /complete change diff/);
+});
+
 test("both prompts carry the review rubric, language-idiom guidance, and severity ladder", () => {
   for (const prompt of [buildDiffPrompt("d"), buildContextPrompt("d", "/tmp/clone")]) {
     assert.ok(/idioms/i.test(prompt), "tells the model to apply the stack's idioms");

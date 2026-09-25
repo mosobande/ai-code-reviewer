@@ -122,8 +122,13 @@ ${diff}`;
  * stated intent). `changeNoun` is the host's term for the unit under review ("pull
  * request" on GitHub, "merge request" on GitLab) so the prompt isn't host-specific.
  */
-export function buildDiffPrompt(diff: string, intent: PrIntent = {}, changeNoun = "pull request"): string {
-  return composePrompt(`You are reviewing a ${changeNoun} from the unified diff below.`, intent, diff);
+export function buildDiffPrompt(
+  diff: string,
+  intent: PrIntent = {},
+  changeNoun = "pull request",
+  mode: "full" | "incremental" = "full",
+): string {
+  return composePrompt(`You are reviewing a ${changeNoun} from the unified diff below.`, intent, diff, mode);
 }
 
 /**

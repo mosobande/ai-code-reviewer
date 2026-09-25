@@ -160,6 +160,47 @@ test("an accepted old post records its pinned outcome without displacing a newer
   store.close();
 });
 
+test("posting supersession preserves a known remote review outcome", async () => {
+  const store = new ReviewStore(":memory:");
+  const heads = new Map<number, string>([[7, "old"]]);
+  const postStarted = deferred();
+  const remoteAccepted = deferred();
+  let staleEffects = 0;
+  const coordinator = new ReviewCoordinator({
+    store,
+    getCurrentHead: async (req) => heads.get(req.ref.pull_number)!,
+    execute: async (job) => {
+      assert.equal(await job.beginPosting(), true);
+      if (job.request.ref.head_sha === "old") {
+        postStarted.resolve();
+        await remoteAccepted.promise;
+        assert.equal(job.signal.aborted, false, "posting work must retain its signal until outcome is recorded");
+        const result = { summary: "old posted", commentCount: 2,
+          coverage: { mode: "full" as const, baseSha: null, complete: true } };
+        assert.equal(job.recordPosted(result), true);
+        if (await job.isCurrent()) staleEffects += 1;
+        return result;
+      }
+      return { summary: "new posted", commentCount: 0 };
+    },
+  });
+  await coordinator.submit(request(7, "old"));
+  await postStarted.promise;
+  heads.set(7, "new");
+  await coordinator.submit(request(7, "new"));
+  remoteAccepted.resolve();
+  await coordinator.onIdle();
+
+  const old = store.get(request(7, "old").ref);
+  assert.equal(old?.phase, "posted");
+  assert.equal(old?.summary, "old posted");
+  assert.equal(old?.comment_count, 2);
+  assert.equal(old?.superseded_by_sha, "new");
+  assert.equal(staleEffects, 0);
+  assert.equal(store.currentForChange(request(7, "new").ref)?.phase, "posted");
+  store.close();
+});
+
 test("same-SHA redelivery neither starts another review nor aborts the active one", async () => {
   const store = new ReviewStore(":memory:");
   const started = deferred();

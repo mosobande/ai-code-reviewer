@@ -25,6 +25,7 @@ export type ReviewExecution = {
   signal: AbortSignal;
   isCurrent(): Promise<boolean>;
   beginPosting(): Promise<boolean>;
+  recordPosted(result: ReviewExecutionResult): boolean;
   policy?: ReviewPolicySnapshot;
 };
 
@@ -122,9 +123,13 @@ export class ReviewCoordinator {
     if (admission.kind !== "accepted") return admission;
 
     for (const generation of admission.superseded) {
-      this.#controllers
-        .get(generation)
-        ?.abort(new Error(`superseded by ${request.ref.head_sha}`));
+      // A posting generation may have completed its remote review. Let it
+      // observe the fence and persist that known outcome before stopping.
+      if (this.#store.getGeneration(generation)?.phase !== "posting") {
+        this.#controllers
+          .get(generation)
+          ?.abort(new Error(`superseded by ${request.ref.head_sha}`));
+      }
     }
 
     const controller = new AbortController();
@@ -175,7 +180,9 @@ export class ReviewCoordinator {
       const replacement = currentHead !== request.ref.head_sha
         ? currentHead : `target:${currentTarget?.head_sha ?? "unknown"}`;
       this.#store.supersedeGeneration(generation, replacement, this.#now());
-      controller.abort(new Error(`superseded by ${replacement}`));
+      if (this.#store.getGeneration(generation)?.phase !== "posting") {
+        controller.abort(new Error(`superseded by ${replacement}`));
+      }
       return false;
     };
     const beginPosting = async (): Promise<boolean> => {
@@ -185,23 +192,24 @@ export class ReviewCoordinator {
 
     try {
       if (!(await checkCurrent())) return;
+      let postRecorded = false;
+      const recordPosted = (result: ReviewExecutionResult): boolean => {
+        if (postRecorded) return true;
+        postRecorded = this.#store.markGenerationPosted(
+          generation, result.summary, result.commentCount, this.#now(), result.coverage,
+        );
+        return postRecorded;
+      };
       const result = await this.#deps.execute({
         request,
         generation,
         signal: controller.signal,
         isCurrent: checkCurrent,
         beginPosting,
+        recordPosted,
         policy,
       });
-      if (
-        !this.#store.markGenerationPosted(
-          generation,
-          result.summary,
-          result.commentCount,
-          this.#now(),
-          result.coverage,
-        )
-      ) {
+      if (!recordPosted(result)) {
         throw new Error(
           "review execution completed without entering the posting phase"
         );
@@ -214,6 +222,10 @@ export class ReviewCoordinator {
         await this.#deps.onFailure?.(request, generation, error);
       } catch (checkError) {
         this.#log.error(`[${refKey(request.ref)}] could not publish failure check:`, checkError);
+      }
+      if (row?.phase === "posted") {
+        this.#log.error(`[${refKey(request.ref)}] review posted but follow-up effects failed:`, error);
+        return;
       }
       if (row?.phase === "posting") {
         this.#log.error(

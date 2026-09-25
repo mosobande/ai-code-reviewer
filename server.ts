@@ -203,7 +203,8 @@ async function executeReview(
     console.log(`[${key}] diff-only review`);
     result = await runReview(
       aiProvider,
-      buildDiffPrompt(diff, req.intent, repoProvider.changeNoun),
+      buildDiffPrompt(diff, req.intent, repoProvider.changeNoun,
+        mode === "incremental" ? "incremental" : "full"),
       {
         signal: job.signal,
       }
@@ -246,6 +247,19 @@ async function executeReview(
       `review post outcome is ambiguous after ${postResult.commentCount} inline comment(s)`
     );
   }
+  const postedOutcome = {
+    summary: result.summary ?? "",
+    commentCount: postResult.commentCount,
+    coverage: {
+      mode,
+      baseSha: coverageBaseSha,
+      complete: mode !== "targeted",
+    },
+  };
+  if (!job.recordPosted(postedOutcome)) {
+    throw new Error("review post outcome could not be recorded");
+  }
+  if (!(await job.isCurrent())) return postedOutcome;
   await repoProvider.upsertWalkthrough(req, header, job.signal);
   if (mode === "targeted" && req.trigger?.finding?.externalId && result.comments.length === 0) {
     await repoProvider.resolveFinding(
@@ -277,15 +291,7 @@ async function executeReview(
       : "Review terminal success is disabled",
     job.signal,
   );
-  return {
-    summary: result.summary ?? "",
-    commentCount: postResult.commentCount,
-    coverage: {
-      mode,
-      baseSha: coverageBaseSha,
-      complete: mode !== "targeted",
-    },
-  };
+  return postedOutcome;
 }
 
 const coordinator = new ReviewCoordinator({
