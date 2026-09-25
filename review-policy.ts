@@ -4,7 +4,11 @@ import { parseDocument, visit } from "yaml";
 export const REVIEW_POLICY_FILE = ".acr.yml";
 
 export type ApprovalMode = "human" | "bot";
-export type ReviewPolicy = { approval: ApprovalMode };
+export type ReviewPolicy = {
+  approval: ApprovalMode;
+  automatic: boolean;
+  depth: "default" | "contextual" | "diff-only";
+};
 export type ReviewPolicyOverrides = Partial<ReviewPolicy>;
 export type TrustedPolicyFileObservation =
   | { state: "observed"; blobSha: string; content: string }
@@ -20,7 +24,7 @@ export type ReviewPolicySnapshot = {
   contentDigest: string | null;
   instance: ReviewPolicy;
   overrides: ReviewPolicyOverrides | null;
-  sources: { approval: "instance" | ".acr.yml" };
+  sources: Record<keyof ReviewPolicy, "instance" | ".acr.yml">;
   effective: ReviewPolicy | null;
   digest: string;
   error: string | null;
@@ -66,7 +70,7 @@ export function parseInstanceReviewPolicy(
   if (approval !== "human" && approval !== "bot") {
     throw new Error(`ACR_APPROVAL_MODE must be "human" or "bot", got ${JSON.stringify(raw)}`);
   }
-  return { approval };
+  return { approval, automatic: false, depth: "default" };
 }
 
 export function parseRepositoryPolicy(content: string): {
@@ -114,8 +118,8 @@ export function parseRepositoryPolicy(content: string): {
   if (parsed.version !== 2) {
     throw new Error(`${REVIEW_POLICY_FILE} version must be 2`);
   }
-  if (!isRecord(parsed.review) || !onlyKeys(parsed.review, ["approval"])) {
-    throw new Error(`${REVIEW_POLICY_FILE} review must be a mapping containing only approval`);
+  if (!isRecord(parsed.review) || !onlyKeys(parsed.review, ["approval", "automatic", "depth"])) {
+    throw new Error(`${REVIEW_POLICY_FILE} review must contain only approval, automatic, and depth`);
   }
   const review: ReviewPolicyOverrides = {};
   if ("approval" in parsed.review) {
@@ -123,6 +127,18 @@ export function parseRepositoryPolicy(content: string): {
       throw new Error(`${REVIEW_POLICY_FILE} review.approval must be human or bot`);
     }
     review.approval = parsed.review.approval;
+  }
+  if ("automatic" in parsed.review) {
+    if (typeof parsed.review.automatic !== "boolean") {
+      throw new Error(`${REVIEW_POLICY_FILE} review.automatic must be true or false`);
+    }
+    review.automatic = parsed.review.automatic;
+  }
+  if ("depth" in parsed.review) {
+    if (parsed.review.depth !== "contextual" && parsed.review.depth !== "diff-only") {
+      throw new Error(`${REVIEW_POLICY_FILE} review.depth must be contextual or diff-only`);
+    }
+    review.depth = parsed.review.depth;
   }
   return { review, contentDigest: sha256(canonical({ version: 2, review })) };
 }
@@ -137,7 +153,9 @@ export function resolveReviewPolicy(
   let effective: ReviewPolicy | null = instance;
   let contentDigest: string | null = null;
   let error: string | null = null;
-  const sources: ReviewPolicySnapshot["sources"] = { approval: "instance" };
+  const sources: ReviewPolicySnapshot["sources"] = {
+    approval: "instance", automatic: "instance", depth: "instance",
+  };
 
   if (observed.state === "observed") {
     try {
@@ -146,6 +164,8 @@ export function resolveReviewPolicy(
       contentDigest = parsed.contentDigest;
       effective = { ...instance, ...overrides };
       if (overrides.approval !== undefined) sources.approval = ".acr.yml";
+      if (overrides.automatic !== undefined) sources.automatic = ".acr.yml";
+      if (overrides.depth !== undefined) sources.depth = ".acr.yml";
     } catch (caught) {
       overrides = null;
       effective = null;

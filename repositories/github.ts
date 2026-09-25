@@ -271,16 +271,17 @@ export function createGithubProvider(
       }
 
       const pr = payload.pull_request;
-      const automatic = automaticRepositories.has(`${owner}/${repo}`.toLowerCase())
-        && ["opened", "reopened", "ready_for_review", "synchronize"].includes(payload.action)
+      const automaticEligible = ["opened", "reopened", "ready_for_review", "synchronize"].includes(payload.action)
         && Number.isSafeInteger(installationId) && installationId! > 0
         && pr?.state === "open" && pr?.draft === false
         && pr?.user?.type !== "Bot"
         && !String(pr?.user?.login ?? "").toLowerCase().endsWith("[bot]")
         && !reviewerLogins.has(String(pr?.user?.login ?? "").toLowerCase())
         && Boolean(pr?.user?.login);
+      const automaticConfigured = automaticEligible
+        && automaticRepositories.has(`${owner}/${repo}`.toLowerCase());
       let requested: string | undefined;
-      if (automatic) {
+      if (automaticConfigured) {
         requested = reviewerLogins.values().next().value;
       } else if (payload.action === "review_requested") {
         requested = payload.requested_reviewer?.login;
@@ -300,12 +301,14 @@ export function createGithubProvider(
           }
         }
       }
+      const automaticCandidate = automaticEligible && !requested;
+      if (automaticCandidate) requested = reviewerLogins.values().next().value;
       if (!requested || !reviewerLogins.has(requested.toLowerCase())) return null;
-      const id = automatic
+      const id = (automaticConfigured || automaticCandidate)
         ? `automatic:${owner.toLowerCase()}/${repo.toLowerCase()}#${pr.number}@${pr.head.sha}:${pr.base?.sha ?? ""}`
         : delivery ?? `assignment:${owner}/${repo}#${pr.number}@${pr.head.sha}:${requested.toLowerCase()}`;
       return normalize(pr, requested, {
-        kind: "assignment", id,
+        kind: automaticCandidate ? "automatic" : "assignment", id,
         requestedMode: payload.action === "synchronize" ? "incremental" : "full",
       });
     },

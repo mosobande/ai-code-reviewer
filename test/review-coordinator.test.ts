@@ -7,6 +7,7 @@ import {
 } from "../review-coordinator.ts";
 import type { ReviewRequest } from "../repository.ts";
 import { ReviewStore } from "../store.ts";
+import { parseInstanceReviewPolicy, resolveReviewPolicy } from "../review-policy.ts";
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -28,6 +29,35 @@ function request(pull: number, head: string): ReviewRequest {
     context: {},
   };
 }
+
+test("automatic candidate requires trusted target policy before admission", async () => {
+  const store = new ReviewStore(":memory:");
+  const candidate = request(8, "head-8");
+  candidate.target = { ref: "refs/heads/main", head_sha: "base-8" };
+  candidate.trigger = { kind: "automatic", id: "automatic:acme/widgets#8@head-8:base-8", requestedMode: "full" };
+  let content = "version: 2\nreview: { automatic: false }\n";
+  const coordinator = new ReviewCoordinator({
+    store,
+    getCurrentHead: async () => "head-8",
+    getCurrentTarget: async () => candidate.target!,
+    resolvePolicy: async (_request, target) => resolveReviewPolicy(
+      parseInstanceReviewPolicy({}), target.ref, target.head_sha,
+      { state: "observed", blobSha: "policy", content },
+    ),
+    execute: async (job) => {
+      if (!job.policy?.effective) throw new Error(job.policy?.error ?? "invalid policy");
+      assert.equal(await job.beginPosting(), true);
+      return { summary: "reviewed", commentCount: 0 };
+    },
+  });
+  assert.equal((await coordinator.submit(candidate)).kind, "not_enabled");
+  assert.equal(store.get(candidate.ref), undefined);
+  content = "version: 2\nreview: { automatic: true }\n";
+  assert.equal((await coordinator.submit(candidate)).kind, "accepted");
+  await coordinator.onIdle();
+  assert.equal(store.get(candidate.ref)?.phase, "posted");
+  store.close();
+});
 
 test("review work is serialized", async () => {
   const queues = new WorkQueues();

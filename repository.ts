@@ -34,7 +34,7 @@ export type ReviewRequest = {
   intent: PrIntent; // title/body, so the review can judge intent vs. change
   deepCapable: boolean; // whether the head can be cloned for a deep review
   trigger?: {
-    kind: "assignment" | "command" | "finding_reply";
+    kind: "assignment" | "automatic" | "command" | "finding_reply";
     id: string;
     requestedMode?: "full" | "incremental" | "targeted";
     finding?: {

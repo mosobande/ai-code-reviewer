@@ -48,6 +48,7 @@ type ReviewCoordinatorDeps = {
 
 export type ReviewSubmission =
   | ReviewAdmission
+  | { kind: "not_enabled" }
   | {
       kind: "stale_head";
       requested_head_sha: string;
@@ -104,6 +105,11 @@ export class ReviewCoordinator {
     const policy = target && this.#deps.resolvePolicy
       ? await this.#deps.resolvePolicy(request, target)
       : undefined;
+    if (request.trigger?.kind === "automatic") {
+      if (!policy || (policy.effective && !policy.effective.automatic)) {
+        return { kind: "not_enabled" };
+      }
+    }
 
     const admission = this.#store.admit(
       request.ref,

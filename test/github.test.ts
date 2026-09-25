@@ -282,6 +282,7 @@ test("automatic review triggers only eligible human, ready PR events in opted-in
   for (const action of ["opened", "reopened", "ready_for_review", "synchronize"]) {
     const request = await parse({ ...base, action });
     assert.equal(request?.reviewer, "ayewobot");
+    assert.equal(request?.trigger?.kind, "assignment");
     assert.deepEqual(request?.target, { ref: "refs/heads/main", head_sha: "base123" });
   }
   for (const patch of [
@@ -289,10 +290,10 @@ test("automatic review triggers only eligible human, ready PR events in opted-in
     { pull_request: { ...base.pull_request, user: { login: "automation[bot]", type: "Bot" } } },
     { pull_request: { ...base.pull_request, user: { login: "ayewobot", type: "User" } } },
     { installation: undefined },
-    { repository: { owner: { login: "quantipixels" }, name: "other" } },
   ]) {
     assert.equal(await parse({ ...base, ...patch, action: "opened" }), null);
   }
+  assert.equal((await parse({ ...base, repository: { owner: { login: "quantipixels" }, name: "other" }, action: "opened" }))?.trigger?.kind, "automatic");
   assert.equal(await parse({ ...base, action: "closed" }), null);
 });
 

@@ -166,8 +166,10 @@ async function executeReview(
   // 2. Review on the AI subscription. A deep review clones the change for file context
   //    when requested and the host supports it; otherwise it's a diff-only pass. Track
   //    what actually ran so the header reflects reality (not just what was asked).
+  const depth = job.policy?.effective?.depth ?? "default";
   const deep = mode === "targeted" ||
-    (shouldDeepReview(deepReviewEnabled, req.labels) && req.deepCapable);
+    (req.deepCapable && (depth === "contextual" ||
+      (depth === "default" && shouldDeepReview(deepReviewEnabled, req.labels))));
   if (mode === "targeted" && !req.trigger?.finding) {
     throw new Error("targeted review requires a finding and its conversation");
   }
@@ -355,6 +357,8 @@ server.post(
         console.log(`[${key}] already reviewed or in flight; skipping`);
       } else if (submission.kind === "stale_head") {
         console.log(`[${key}] stale review request; skipping`);
+      } else if (submission.kind === "not_enabled") {
+        console.log(`[${key}] automatic review not enabled by target policy; skipping`);
       }
       res.status(200).end();
     } catch (error) {
