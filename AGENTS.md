@@ -29,10 +29,10 @@ There is no lint script. A change passes when typecheck and tests pass.
 
 ## Records
 
-- Rules: this file; `CLAUDE.md` links to it.
+- Rules: this file, with its symlink for Claude.
 - Architecture: [Review at a glance](README.md#review-at-a-glance) and [review workflow](docs/review-workflow.md). The header of `server.ts` names the two seams.
 - Testing: the Build, test and check section above.
 - Glossary: none; no standalone term list exists, and the docs define terms where they use them.
 - Codebase standard: none; the Rules section above holds the conventions.
-- Decisions: none; no ADR has been written.
-- Gotchas: none; none has been recorded.
+- Decisions: none; the owner has approved no ADR.
+- Gotchas: none; no recurring problem has passed admission.
